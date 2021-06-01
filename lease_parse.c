@@ -2,12 +2,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
-
-struct dhclient_lease {
-	unsigned int recsiz;
-	unsigned int curpos;
-	char rec[0];
-};
+#include "lease_parse.h"
 
 struct dhclient_lease *dhclient_init(unsigned int buflen)
 {

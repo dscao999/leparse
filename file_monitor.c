@@ -7,20 +7,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <sys/inotify.h>
+#include "file_monitor.h"
 
-struct file_watch {
-	off_t (*mod_action)(const char *fname, off_t offset);
-	off_t offset;
-	int fd;
-	int wd;
-	char lfile[256];
-	char evbuf[(sizeof(struct inotify_event)+NAME_MAX)*100];
-};
-
-//static struct file_watch lwat = {.offset = 0, .fd = -1, .wd = -1}; 
-
-int monitor_add(struct file_watch *fw)
+static int monitor_add(struct file_watch *fw)
 {
 	int sysret, count;
 	struct stat mstat;
@@ -71,6 +60,7 @@ int monitor_init(const char *fname, struct file_watch *fw)
 		return -errno;
 	}
 	fw->offset = 0;
+	fw->mod_action = NULL;
 
 	retv = monitor_add(fw);
 
@@ -80,7 +70,8 @@ int monitor_init(const char *fname, struct file_watch *fw)
 
 void monitor_exit(struct file_watch *fw)
 {
-	inotify_rm_watch(fw->fd, fw->wd);
+	if (fw->wd != -1)
+		inotify_rm_watch(fw->fd, fw->wd);
 	close(fw->fd);
 	fw->fd = -1;
 	fw->wd = -1;
@@ -88,7 +79,7 @@ void monitor_exit(struct file_watch *fw)
 
 int monitor_watch(struct file_watch *fw)
 {
-	int len, i, retv;
+	int len, i, moved, retv;
 	struct inotify_event *ev;
 
 	len = read(fw->fd, fw->evbuf, sizeof(fw->evbuf));
@@ -97,16 +88,24 @@ int monitor_watch(struct file_watch *fw)
 		return len;
 	}
 	i = 0;
-	while (i < len) {
+	moved = 0;
+	while (i < len && moved == 0) {
 		ev = (struct inotify_event *)(fw->evbuf + i);
 		if (ev->mask & IN_MOVE_SELF) {
 			retv = monitor_add(fw);
-			return retv;
-		}
-		if (ev->mask & IN_MODIFY) {
-			fw->offset = fw->mod_action(fw->lfile, fw->offset);
+			if (retv < 0)
+				fprintf(stderr, "Cannot add monitor after " \
+					       "file was moved.\n");
+			moved = 1;
+		} else if (ev->mask & IN_MODIFY) {
+			if (fw->mod_action == NULL)
+				printf("File %s modified.\n", fw->lfile);
+			else
+				fw->offset = fw->mod_action(fw);
 		}
 		i += sizeof(struct inotify_event) + ev->len;
+		if (moved == 1 && i < len)
+			fprintf(stderr, "Events after file was moved.\n");
 	}
 	return len;
 }
