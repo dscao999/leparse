@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -13,7 +15,8 @@ off_t read_tail(const struct file_watch *fw)
 {
 	FILE *fin;
 	struct dhclient_lease *lebuf;
-	int len;
+	int len, sysret;
+	struct stat mst;
 
 	fin = fopen(fw->lfile, "r");
 	if (!fin) {
@@ -21,11 +24,16 @@ off_t read_tail(const struct file_watch *fw)
 				strerror(errno));
 		return fw->offset;
 	}
-	if (fseek(fin, fw->offset, SEEK_SET) == -1) {
-		fprintf(stderr, "Cannot fseek to the position: %s\n",
-				strerror(errno));
-		return fw->offset;
+	sysret = fstat(fileno(fin), &mst);
+	if (mst.st_size > fw->offset) {
+		sysret = fseek(fin, fw->offset, SEEK_SET);
+		if (sysret == -1) {
+			fprintf(stderr, "Cannot fseek to the position: %s\n",
+					strerror(errno));
+			exit(11);
+		}
 	}
+
 	lebuf = dhclient_init(1024);
 	if (!lebuf) {
 		fprintf(stderr, "Out of Memory.\n");

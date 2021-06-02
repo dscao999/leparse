@@ -28,7 +28,7 @@ static int monitor_add(struct file_watch *fw)
 		nanosleep(&itv, NULL);
 		sysret = stat(fw->lfile, &mstat);
 		count += 1;
-	} while (sysret == -1 && errno == ENOENT && count < 10);
+	} while (sysret == -1 && errno == ENOENT && count < 100);
 	if (sysret == -1) {
 		fprintf(stderr, "stat failed %s: %s\n", fw->lfile,
 				strerror(errno));
