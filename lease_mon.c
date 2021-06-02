@@ -2,10 +2,47 @@
 #include <unistd.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 #include "file_monitor.h"
 #include "lease_parse.h"
 
 static volatile int global_exit = 0;
+
+off_t read_tail(const struct file_watch *fw)
+{
+	FILE *fin;
+	struct dhclient_lease *lebuf;
+	int len;
+
+	fin = fopen(fw->lfile, "r");
+	if (!fin) {
+		fprintf(stderr, "Cannot open %s: %s\n", fw->lfile,
+				strerror(errno));
+		return fw->offset;
+	}
+	if (fseek(fin, fw->offset, SEEK_SET) == -1) {
+		fprintf(stderr, "Cannot fseek to the position: %s\n",
+				strerror(errno));
+		return fw->offset;
+	}
+	lebuf = dhclient_init(1024);
+	if (!lebuf) {
+		fprintf(stderr, "Out of Memory.\n");
+		fclose(fin);
+		exit(100);
+	}
+
+	do {
+		len = dhclient_lease_parse(fin, lebuf);
+		if (len > 0)
+			printf("%s\n", lebuf->rec);
+	} while (len != -1);
+
+	dhclient_exit(lebuf);
+
+	return ftell(fin);
+}
 
 int main(int argc, char *argv[])
 {
@@ -51,6 +88,7 @@ int main(int argc, char *argv[])
 		goto exit_10;
 	}
 
+	monitor_set_action(fw, read_tail);
 	do {
 		retv = monitor_watch(fw);
 	} while (retv > 0 && global_exit == 0);

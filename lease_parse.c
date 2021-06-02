@@ -25,7 +25,7 @@ void dhclient_exit(struct dhclient_lease *lebuf)
 	free(lebuf);
 }
 
-int lease_parse(FILE *fin, struct dhclient_lease *lebuf)
+int dhclient_lease_parse(FILE *fin, struct dhclient_lease *lebuf)
 {
 	int c, blank, curpos;
 
@@ -33,11 +33,9 @@ int lease_parse(FILE *fin, struct dhclient_lease *lebuf)
 	lebuf->rec[0] = 0;
 	curpos = 0;
 	c = getc(fin);
-	while (c == ' ' || c == '\t')
+	while (c == ' ' || c == '\t' || c == '\n')
 		c = getc(fin);
-	if (c == '\n')
-		return 0;
-	else if (c == EOF)
+	if (c == EOF)
 		return -1;
 
 	lebuf->rec[curpos++] = c;

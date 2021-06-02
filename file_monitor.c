@@ -49,6 +49,9 @@ int monitor_init(const char *fname, struct file_watch *fw)
 {
 	int retv = 0;
 
+	fw->offset = 0;
+	fw->mod_action = NULL;
+	fw->wd = -1;
 	fw->fd = inotify_init();
 	if (fw->fd == -1) {
 		fprintf(stderr, "inotify init failed: %s\n", strerror(errno));
@@ -59,8 +62,6 @@ int monitor_init(const char *fname, struct file_watch *fw)
 		close(fw->fd);
 		return -errno;
 	}
-	fw->offset = 0;
-	fw->mod_action = NULL;
 
 	retv = monitor_add(fw);
 
@@ -81,6 +82,7 @@ int monitor_watch(struct file_watch *fw)
 {
 	int len, i, moved, retv;
 	struct inotify_event *ev;
+	time_t curtm;
 
 	len = read(fw->fd, fw->evbuf, sizeof(fw->evbuf));
 	if (len < 0) {
@@ -92,15 +94,19 @@ int monitor_watch(struct file_watch *fw)
 	while (i < len && moved == 0) {
 		ev = (struct inotify_event *)(fw->evbuf + i);
 		if (ev->mask & IN_MOVE_SELF) {
+			curtm = time(NULL);
+			printf("File moved at %s", asctime(localtime(&curtm)));
 			retv = monitor_add(fw);
 			if (retv < 0)
 				fprintf(stderr, "Cannot add monitor after " \
 					       "file was moved.\n");
 			moved = 1;
 		} else if (ev->mask & IN_MODIFY) {
-			if (fw->mod_action == NULL)
-				printf("File %s modified.\n", fw->lfile);
-			else
+			if (fw->mod_action == NULL) {
+				curtm = time(NULL);
+				printf("File %s modified at %s", fw->lfile,
+						asctime(localtime(&curtm)));
+			} else
 				fw->offset = fw->mod_action(fw);
 		}
 		i += sizeof(struct inotify_event) + ev->len;
