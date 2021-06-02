@@ -7,9 +7,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
+#include <poll.h>
 #include "file_monitor.h"
 
-static int monitor_add(struct file_watch *fw)
+static int monitor_add(struct file_watch *fw, uint32_t mask)
 {
 	int sysret, count;
 	struct stat mstat;
@@ -18,25 +19,29 @@ static int monitor_add(struct file_watch *fw)
 
 	if (fw->wd != -1) {
 		sysret = inotify_rm_watch(fw->fd, fw->wd);
-		if (sysret == -1)
-			fprintf(stderr, "Cannot remove old watch fd: %s\n",
-					strerror(errno));
+		if (sysret == -1 && (mask & IN_DELETE_SELF) == 0)
+			fprintf(stderr, "Cannot remove old watch fd %d: %s\n",
+					fw->wd, strerror(errno));
 		fw->wd = -1;
 	}
 
+	count = 0;
 	do {
 		nanosleep(&itv, NULL);
 		sysret = stat(fw->lfile, &mstat);
 		count += 1;
-	} while (sysret == -1 && errno == ENOENT && count < 100);
+	} while (sysret == -1 && errno == ENOENT && count < 60);
 	if (sysret == -1) {
 		fprintf(stderr, "stat failed %s: %s\n", fw->lfile,
 				strerror(errno));
-		return sysret;
+		exit(12);
 	}
-	fw->offset = mstat.st_size;
+	if (mask & (IN_DELETE_SELF|IN_MOVE_SELF))
+		fw->offset = 0;
+	else
+		fw->offset = mstat.st_size;
 
-	emask = IN_MODIFY|IN_MOVE_SELF;
+	emask = IN_MODIFY|IN_MOVE_SELF|IN_DELETE_SELF;
 	sysret = inotify_add_watch(fw->fd, fw->lfile, emask);
 	if (sysret == -1)
 		fprintf(stderr, "Cannot add watch to %s: %s\n",
@@ -63,7 +68,7 @@ int monitor_init(const char *fname, struct file_watch *fw)
 		return -errno;
 	}
 
-	retv = monitor_add(fw);
+	retv = monitor_add(fw, 0);
 
 	return retv;
 
@@ -80,9 +85,25 @@ void monitor_exit(struct file_watch *fw)
 
 int monitor_watch(struct file_watch *fw)
 {
-	int len, i, moved, retv;
+	int len, i, retv, sysret, numevt;
 	struct inotify_event *ev;
 	time_t curtm;
+	struct pollfd mfd;
+
+	mfd.fd = fw->fd;
+	mfd.events = POLLIN;
+	mfd.revents = 0;
+	sysret = poll(&mfd, 1, 250);
+	if (sysret == -1) {
+		if (errno != EINTR)
+			fprintf(stderr, "poll failed: %s\n", strerror(errno));
+		else
+			sysret = 0;
+		return sysret;
+	} else if (sysret == 0)
+		return sysret;
+	if (mfd.revents & (POLLHUP|POLLERR|POLLNVAL))
+		return -1;
 
 	len = read(fw->fd, fw->evbuf, sizeof(fw->evbuf));
 	if (len < 0) {
@@ -90,17 +111,17 @@ int monitor_watch(struct file_watch *fw)
 		return len;
 	}
 	i = 0;
-	moved = 0;
-	while (i < len && moved == 0) {
+	numevt = 0;
+	while (i < len) {
 		ev = (struct inotify_event *)(fw->evbuf + i);
-		if (ev->mask & IN_MOVE_SELF) {
+		if (ev->mask & (IN_MOVE_SELF|IN_DELETE_SELF)) {
 			curtm = time(NULL);
-			printf("File moved at %s", asctime(localtime(&curtm)));
-			retv = monitor_add(fw);
+			printf("File moved/deleted at %s",
+					asctime(localtime(&curtm)));
+			retv = monitor_add(fw, ev->mask);
 			if (retv < 0)
 				fprintf(stderr, "Cannot add monitor after " \
-					       "file was moved.\n");
-			moved = 1;
+					       "file was moved/deleted.\n");
 		} else if (ev->mask & IN_MODIFY) {
 			if (fw->mod_action == NULL) {
 				curtm = time(NULL);
@@ -110,8 +131,7 @@ int monitor_watch(struct file_watch *fw)
 				fw->offset = fw->mod_action(fw);
 		}
 		i += sizeof(struct inotify_event) + ev->len;
-		if (moved == 1 && i < len)
-			fprintf(stderr, "Events after file was moved.\n");
+		numevt += 1;
 	}
 	return len;
 }

@@ -6,10 +6,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
 #include "file_monitor.h"
 #include "lease_parse.h"
 
 static volatile int global_exit = 0;
+
+static void sig_handler(int sig)
+{
+	if (sig == SIGINT || sig == SIGTERM)
+		global_exit = 1;
+}
 
 off_t read_tail(const struct file_watch *fw)
 {
@@ -17,6 +24,7 @@ off_t read_tail(const struct file_watch *fw)
 	struct dhclient_lease *lebuf;
 	int len, sysret;
 	struct stat mst;
+	off_t curpos;
 
 	fin = fopen(fw->lfile, "r");
 	if (!fin) {
@@ -25,6 +33,12 @@ off_t read_tail(const struct file_watch *fw)
 		return fw->offset;
 	}
 	sysret = fstat(fileno(fin), &mst);
+	assert(sysret == 0);
+	if (mst.st_size == 0) {
+		fprintf(stderr, "file truncated to zero.\n");
+		goto exit_10;
+	}
+
 	if (mst.st_size > fw->offset) {
 		sysret = fseek(fin, fw->offset, SEEK_SET);
 		if (sysret == -1) {
@@ -32,6 +46,9 @@ off_t read_tail(const struct file_watch *fw)
 					strerror(errno));
 			exit(11);
 		}
+	} else {
+		fprintf(stderr, "File %s: truncated. Size: %ld\n",
+				fw->lfile, mst.st_size);
 	}
 
 	lebuf = dhclient_init(1024);
@@ -49,7 +66,11 @@ off_t read_tail(const struct file_watch *fw)
 
 	dhclient_exit(lebuf);
 
-	return ftell(fin);
+exit_10:
+	curpos = ftell(fin);
+	fclose(fin);
+
+	return curpos;
 }
 
 int main(int argc, char *argv[])
@@ -59,6 +80,7 @@ int main(int argc, char *argv[])
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct file_watch *fw;
+	struct sigaction mact;
 
 	opterr = 0;
 	fin = 0;
@@ -96,12 +118,17 @@ int main(int argc, char *argv[])
 		goto exit_10;
 	}
 
+	memset(&mact, 0, sizeof(struct sigaction));
+	mact.sa_handler = sig_handler;
+	if (sigaction(SIGINT, &mact, NULL) == -1 ||
+			sigaction(SIGTERM, &mact, NULL) == -1)
+		fprintf(stderr, "Warning: Signal Handler Installation failed:" \
+				" %s\n", strerror(errno));
+
 	monitor_set_action(fw, read_tail);
 	do {
 		retv = monitor_watch(fw);
-	} while (retv > 0 && global_exit == 0);
-
-	retv = 0;
+	} while (retv >= 0 && global_exit == 0);
 
 	monitor_exit(fw);
 exit_10:
