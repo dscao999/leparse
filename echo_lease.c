@@ -7,6 +7,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <signal.h>
+#include <assert.h>
 
 static volatile int global_exit = 0;
 
@@ -20,17 +21,42 @@ int main(int argc, char *argv[])
 {
 	struct sigaction mact;
 	struct addrinfo hint, *svrinfo, *adr;
-	int retv, sock, eno, buflen;
+	int retv, sock, eno, buflen, fin, c;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
 	char *buf;
+	const char *port;
+	extern char *optarg;
+	extern int opterr, optopt;
 
+	opterr = 0;
+	fin = 0;
+	do {
+		c = getopt(argc, argv, ":p:");
+		switch (c) {
+		case -1:
+			fin = 1;
+			break;
+		case '?':
+			fprintf(stderr, "Unknown option: %c\n", optopt);
+			break;
+		case ':':
+			fprintf(stderr, "Missing arguments for %c\n",
+					(char)optopt);
+			break;
+		case 'p':
+			port = optarg;
+			break;
+		default:
+			assert(0);
+		}
+	} while (fin == 0);
 	memset(&hint, 0, sizeof(hint));
 	hint.ai_family = AF_INET;
 	hint.ai_socktype = SOCK_DGRAM;
 	hint.ai_flags = AI_PASSIVE|AI_NUMERICSERV;
-	retv = getaddrinfo(NULL, "7800", &hint, &svrinfo);
+	retv = getaddrinfo(NULL, port, &hint, &svrinfo);
 	if (retv != 0) {
 		fprintf(stderr, "getaddrinfo failed: %s\n", gai_strerror(retv));
 		return 1;
