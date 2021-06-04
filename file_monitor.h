@@ -4,8 +4,9 @@
 #include <sys/inotify.h>
 
 struct file_watch {
-	off_t (*mod_action)(const struct file_watch *fw);
+	off_t (*mod_action)(const struct file_watch *fw, void *data);
 	off_t offset;
+	void *mon_data;
 	int fd;
 	int wd;
 	char lfile[256];
@@ -17,9 +18,11 @@ void monitor_exit(struct file_watch *fw);
 int monitor_watch(struct file_watch *fw);
 
 static inline void monitor_set_action(struct file_watch *fw,
-		off_t (*mod_action)(const struct file_watch *fw))
+		off_t (*mod_action)(const struct file_watch *fw, void *data),
+		void *data)
 {
 	fw->mod_action = mod_action;
+	fw->mon_data = data;
 }
 
 #endif /* FILE_WATCH_DSCAO__ */

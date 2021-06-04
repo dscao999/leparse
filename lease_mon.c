@@ -7,6 +7,9 @@
 #include <string.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #include "file_monitor.h"
 #include "lease_parse.h"
 
@@ -18,13 +21,20 @@ static void sig_handler(int sig)
 		global_exit = 1;
 }
 
-off_t read_tail(const struct file_watch *fw)
+struct leserv {
+	int sock;
+	socklen_t addr_len;
+	struct sockaddr addr;
+};
+
+off_t read_tail(const struct file_watch *fw, void *data)
 {
 	FILE *fin;
 	struct dhclient_lease *lebuf;
 	int len, sysret;
 	struct stat mst;
 	off_t curpos;
+	struct leserv *svr = data;
 
 	fin = fopen(fw->lfile, "r");
 	if (!fin) {
@@ -60,8 +70,19 @@ off_t read_tail(const struct file_watch *fw)
 
 	do {
 		len = dhclient_lease_parse(fin, lebuf);
-		if (len > 0)
+		if (len <= 0)
+			continue;
+		if (svr) {
+			do {
+				sysret = sendto(svr->sock, lebuf->rec, len + 1,
+						0, &svr->addr, svr->addr_len);
+			} while (sysret == -1 && errno == EINTR);
+			if (sysret == -1 && errno != EINTR)
+				fprintf(stderr, "sendto failed: %s\n",
+						strerror(errno));
+		} else {
 			printf("%s\n", lebuf->rec);
+		}
 	} while (len != -1);
 
 	dhclient_exit(lebuf);
@@ -76,16 +97,19 @@ exit_10:
 int main(int argc, char *argv[])
 {
 	int fin, c, retv;
-	const char *lease_file = NULL;
+	const char *lease_file = NULL, *server = "127.0.0.1";
+	const char *port = "7800";
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct file_watch *fw;
 	struct sigaction mact;
+	struct leserv serv;
+	struct addrinfo hint, *serv_adr;
 
 	opterr = 0;
 	fin = 0;
 	do {
-		c = getopt(argc, argv, ":l:");
+		c = getopt(argc, argv, ":l:s:p:");
 		switch(c) {
 		case -1:
 			fin = 1;
@@ -100,12 +124,25 @@ int main(int argc, char *argv[])
 		case 'l':
 			lease_file = optarg;
 			break;
+		case 's':
+			server = optarg;
+			break;
+		case 'p':
+			port = optarg;
+			break;
 		default:
 			assert(0);
 		}
 	} while (fin == 0);
 	if (lease_file == NULL)
 		lease_file = "/var/lib/dhcp/dhcpd.leases";
+
+	memset(&mact, 0, sizeof(struct sigaction));
+	mact.sa_handler = sig_handler;
+	if (sigaction(SIGINT, &mact, NULL) == -1 ||
+			sigaction(SIGTERM, &mact, NULL) == -1)
+		fprintf(stderr, "Warning: Signal Handler Installation failed:" \
+				" %s\n", strerror(errno));
 
 	fw = malloc(sizeof(struct file_watch));
 	if (!fw) {
@@ -118,18 +155,35 @@ int main(int argc, char *argv[])
 		goto exit_10;
 	}
 
-	memset(&mact, 0, sizeof(struct sigaction));
-	mact.sa_handler = sig_handler;
-	if (sigaction(SIGINT, &mact, NULL) == -1 ||
-			sigaction(SIGTERM, &mact, NULL) == -1)
-		fprintf(stderr, "Warning: Signal Handler Installation failed:" \
-				" %s\n", strerror(errno));
+	memset(&serv, 0, sizeof(serv));
+	memset(&hint, 0, sizeof(hint));
+	hint.ai_family = AF_INET;
+	hint.ai_socktype = SOCK_DGRAM;
+	hint.ai_flags = AI_NUMERICSERV;
+	retv = getaddrinfo(server, port, &hint, &serv_adr);
+	if (retv != 0) {
+		fprintf(stderr, "getaddrinfo failed: %s\n", gai_strerror(retv));
+		retv = 2;
+		goto exit_20;
+	}
+	serv.addr_len = serv_adr->ai_addrlen;
+	memcpy(&serv.addr, serv_adr->ai_addr, serv_adr->ai_addrlen);
+	freeaddrinfo(serv_adr);
 
-	monitor_set_action(fw, read_tail);
+	serv.sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (serv.sock == -1) {
+		fprintf(stderr, "Cannot create socket: %s\n", strerror(errno));
+		retv = 3;
+		goto exit_20;
+	}
+
+	monitor_set_action(fw, read_tail, &serv);
 	do {
 		retv = monitor_watch(fw);
 	} while (retv >= 0 && global_exit == 0);
 
+	close(serv.sock);
+exit_20:
 	monitor_exit(fw);
 exit_10:
 	free(fw);

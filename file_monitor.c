@@ -128,7 +128,7 @@ int monitor_watch(struct file_watch *fw)
 				printf("File %s modified at %s", fw->lfile,
 						asctime(localtime(&curtm)));
 			} else
-				fw->offset = fw->mod_action(fw);
+				fw->offset = fw->mod_action(fw, fw->mon_data);
 		}
 		i += sizeof(struct inotify_event) + ev->len;
 		numevt += 1;
