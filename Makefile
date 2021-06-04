@@ -3,7 +3,7 @@ LDFLAGS = -g
 
 .PHONY: all clean
 
-all: fmon lecho
+all: fmon lecho dirnot
 
 fmon: lease_mon.o file_monitor.o lease_parse.o
 	$(LINK.o) $^ -o $@
@@ -11,6 +11,9 @@ fmon: lease_mon.o file_monitor.o lease_parse.o
 lecho: echo_lease.o
 	$(LINK.o) $^ -o $@
 
+dirnot:	inotify_dir.o
+	$(LINK.o) $^ -o $@
+
 clean:
 	rm -f *.o
-	rm -f fmon lecho
+	rm -f fmon lecho dirnot
