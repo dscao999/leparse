@@ -8,8 +8,9 @@ struct file_watch {
 	off_t offset;
 	void *mon_data;
 	int fd;
-	int wd;
-	char lfile[256];
+	int wd, wdir;
+	int create_new;
+	char lfile[256], tmpfile[256];
 	char evbuf[(sizeof(struct inotify_event)+NAME_MAX)*100];
 };
 

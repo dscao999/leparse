@@ -23,6 +23,9 @@ int main(int argc, char *argv[])
 	char *ebuf;
 	struct inotify_event *ev;
 
+	if (argc > 1)
+		dir = argv[1];
+
 	ebuf_len = 128;
 	ebuf = malloc(ebuf_len);
 

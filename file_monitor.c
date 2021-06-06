@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <poll.h>
+#include <assert.h>
 #include "file_monitor.h"
 
 static int monitor_add(struct file_watch *fw, uint32_t mask)
@@ -16,6 +17,7 @@ static int monitor_add(struct file_watch *fw, uint32_t mask)
 	struct stat mstat;
 	uint32_t emask;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
+	time_t curtm;
 
 	if (fw->wd != -1) {
 		sysret = inotify_rm_watch(fw->fd, fw->wd);
@@ -27,6 +29,9 @@ static int monitor_add(struct file_watch *fw, uint32_t mask)
 
 	count = 0;
 	do {
+		curtm = time(NULL);
+		printf("Waiting for file: %s at %s", fw->lfile,
+				asctime(localtime(&curtm)));
 		nanosleep(&itv, NULL);
 		sysret = stat(fw->lfile, &mstat);
 		count += 1;
@@ -53,6 +58,7 @@ static int monitor_add(struct file_watch *fw, uint32_t mask)
 int monitor_init(const char *fname, struct file_watch *fw)
 {
 	int retv = 0;
+	char *dirname, *lslash;
 
 	fw->offset = 0;
 	fw->mod_action = NULL;
@@ -67,11 +73,25 @@ int monitor_init(const char *fname, struct file_watch *fw)
 		close(fw->fd);
 		return -errno;
 	}
+	dirname = malloc(strlen(fw->lfile)+1);
+	strcpy(dirname, fw->lfile);
+	lslash = strrchr(dirname, '/');
+	assert(lslash != NULL);
+	*lslash = 0;
+	printf("Watch dir: %s\n", dirname);
+	fw->wdir = inotify_add_watch(fw->fd, dirname,
+			IN_CREATE|IN_DELETE|IN_MOVED_FROM|IN_MOVED_TO);
+	if (fw->wdir == -1) {
+		fprintf(stderr, "Cannot watch %s: %s\n",
+				dirname, strerror(errno));
+		free(dirname);
+		return fw->wdir;
+	}
+	fw->create_new = 0;
+	free(dirname);
 
 	retv = monitor_add(fw, 0);
-
 	return retv;
-
 }
 
 void monitor_exit(struct file_watch *fw)
@@ -85,11 +105,13 @@ void monitor_exit(struct file_watch *fw)
 
 int monitor_watch(struct file_watch *fw)
 {
-	int len, i, retv, sysret, numevt;
+	int len, i, retv, sysret, numevt, llen;
 	struct inotify_event *ev;
 	time_t curtm;
 	struct pollfd mfd;
+	static const char *lease_name = "dhcpd.leases.";
 
+	llen = strlen(lease_name);
 	mfd.fd = fw->fd;
 	mfd.events = POLLIN;
 	mfd.revents = 0;
@@ -116,12 +138,38 @@ int monitor_watch(struct file_watch *fw)
 		ev = (struct inotify_event *)(fw->evbuf + i);
 		if (ev->mask & (IN_MOVE_SELF|IN_DELETE_SELF)) {
 			curtm = time(NULL);
-			printf("File moved/deleted at %s",
+			printf("Lease File %s moved/deleted at %s", ev->name,
 					asctime(localtime(&curtm)));
-			retv = monitor_add(fw, ev->mask);
-			if (retv < 0)
+			/*retv = monitor_add(fw, ev->mask);
+			if (retv < 0) {
 				fprintf(stderr, "Cannot add monitor after " \
 					       "file was moved/deleted.\n");
+				exit(10);
+			}*/
+		} else if (ev->mask & IN_CREATE) {
+			assert(fw->wdir == ev->wd);
+			if (memcmp(ev->name, lease_name, llen) != 0)
+				goto next_item;
+			strcpy(fw->tmpfile, ev->name);
+			fw->create_new = 1;
+			curtm = time(NULL);
+			printf("File %s created at %s", ev->name,
+					asctime(localtime(&curtm)));
+		} else if (ev->mask & IN_MOVED_FROM) {
+			assert(fw->wdir == ev->wd);
+			if (memcmp(ev->name, lease_name, llen) != 0 ||
+					fw->create_new == 0)
+				goto next_item;
+			fw->create_new = 0;
+			curtm = time(NULL);
+			printf("File %s get moved at %s", ev->name,
+					asctime(localtime(&curtm)));
+			retv = monitor_add(fw, ev->mask);
+			if (retv < 0) {
+				fprintf(stderr, "Cannot add monitor after " \
+						"file was moved.\n");
+				exit(10);
+			}
 		} else if (ev->mask & IN_MODIFY) {
 			if (fw->mod_action == NULL) {
 				curtm = time(NULL);
@@ -130,6 +178,7 @@ int monitor_watch(struct file_watch *fw)
 			} else
 				fw->offset = fw->mod_action(fw, fw->mon_data);
 		}
+next_item:
 		i += sizeof(struct inotify_event) + ev->len;
 		numevt += 1;
 	}

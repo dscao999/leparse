@@ -26,7 +26,7 @@ int main(int argc, char *argv[])
 	socklen_t peer_addr_len;
 	ssize_t nread;
 	char *buf;
-	const char *port;
+	const char *port = "7800";
 	extern char *optarg;
 	extern int opterr, optopt;
 
