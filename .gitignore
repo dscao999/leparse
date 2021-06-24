@@ -51,8 +51,10 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+core
 *.swp
 fmon
 lecho
 dirnot
+plidm
 cscope.files
