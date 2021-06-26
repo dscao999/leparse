@@ -99,8 +99,10 @@ int main(int argc, char *argv[])
 			retv = 5;
 			goto exit_10;
 		}
-		if (nread > 0)
+		if (nread > 0) {
+			buf[nread] = 0;
 			printf("%s\n", buf);
+		}
 	}
 
 exit_10:
