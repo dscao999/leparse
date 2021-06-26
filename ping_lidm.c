@@ -14,6 +14,7 @@
 #include <netdb.h>
 #include <time.h>
 #include <net/if.h>
+#include <sys/random.h>
 
 static volatile int global_exit = 0;
 
@@ -114,7 +115,7 @@ const struct idinfo * getinfo(int sockd)
 
 int main(int argc, char *argv[])
 {
-	int fin, c, retv;
+	int fin, c, retv, len, sysret;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct sigaction mact;
@@ -123,6 +124,9 @@ int main(int argc, char *argv[])
 	static const char *lidm = "127.0.0.1";
 	static const char *port = "7800";
 	const struct idinfo *inf;
+	char *buf;
+	unsigned long rndsec;
+	struct timespec itm;
 
 	opterr = 0;
 	fin = 0;
@@ -180,9 +184,36 @@ int main(int argc, char *argv[])
 	}
 
 	inf = getinfo(serv.sock);
-	if (inf)
-		printf("IFACE: %s, IP: %s, MAC: %s\n", inf->iface, inf->ip, inf->mac);
+	if (!inf) {
+		retv = 3;
+		goto exit_10;
+	}
+	buf = malloc(512);
+	if (!buf) {
+		fprintf(stderr, "Out of Memory.\n");
+		retv = 100;
+		goto exit_10;
+	}
+	getrandom(&rndsec, sizeof(rndsec), 0);
+	itm.tv_sec = 0;
+	itm.tv_nsec = rndsec % 500000000ul;
+	len = sprintf(buf, "lease %s { start %lu; hardware ethernet %s; }",
+			inf->ip, (unsigned long)inf->tmstp, inf->mac);
+	sysret = sendto(serv.sock, buf, len, 0, &serv.addr, serv.addr_len);
+	if (sysret == -1)
+		fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+	nanosleep(&itm, NULL);
+	sysret = sendto(serv.sock, buf, len, 0, &serv.addr, serv.addr_len);
+	if (sysret == -1)
+		fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+	itm.tv_nsec = 1000000000ul - itm.tv_nsec;
+	nanosleep(&itm, NULL);
+	sysret = sendto(serv.sock, buf, len, 0, &serv.addr, serv.addr_len);
+	if (sysret == -1)
+		fprintf(stderr, "sendto failed: %s\n", strerror(errno));
 
+	free(buf);
+exit_10:
 	close(serv.sock);
 	return retv;
 }
