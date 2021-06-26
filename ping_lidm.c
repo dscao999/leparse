@@ -37,25 +37,37 @@ struct idinfo {
 	char iface[16];
 	char ip[24];
 	char mac[24];
+	struct idinfo *nxt;
 };
 
-const struct idinfo * getinfo(int sockd)
+struct idinfo * getinfo(int sockd)
 {
-	static struct idinfo inf;
+	struct idinfo *inf, *inf1st, *inf_prev;
 	DIR *dir;
 	struct dirent *dent;
-	int found = 0, numb;
-	char macfile[128];
+	int numb;
+	char *macfile, *lnknam, *buf;
 	FILE *fin;
-	char *ln;
+	char *ln, *mac, *iface, *ip;
 	struct ifreq *mreq;
 	struct sockaddr_in *ipv4_addr;
+	time_t tmstp;
 
-	mreq = malloc(sizeof(struct ifreq));
+	mreq = malloc(sizeof(struct ifreq)+1152);
 	if (!mreq) {
 		fprintf(stderr, "Out of Memory!\n");
 		exit(100);
 	}
+	tmstp = time(NULL);
+	macfile = (char *)(mreq + 1);
+	lnknam = macfile + 256;
+	buf = lnknam + 256;
+	iface = buf + 256;
+	mac = iface + 128;
+	ip = mac + 128;
+
+	inf1st = NULL;
+	inf_prev = NULL;
 	dir = opendir(netdir);
 	do {
 		errno = 0;
@@ -70,10 +82,49 @@ const struct idinfo * getinfo(int sockd)
 		if ((dent->d_type & DT_LNK) == 0 ||
 				strcmp(dent->d_name, "lo") == 0)
 			continue;
-		strncpy(inf.iface, dent->d_name, sizeof(inf.iface));
+		strcpy(iface, dent->d_name);
 		strcpy(macfile, netdir);
 		strcat(macfile, "/");
-		strcat(macfile, inf.iface);
+		strcat(macfile, iface);
+		numb = readlink(macfile, lnknam, 256);
+		if (numb == -1) {
+			fprintf(stderr, "readlink failed for %s: %s\n",
+					macfile, strerror(errno));
+			continue;
+		}
+		lnknam[numb] = 0;
+		if (strstr(lnknam, "/usb"))
+			continue;
+		strcpy(lnknam, macfile);
+		strcat(lnknam, "/type");
+		fin = fopen(lnknam, "rb");
+		if (!fin) {
+			fprintf(stderr, "Cannot open %s for read: %s\n",
+					lnknam, strerror(errno));
+			continue;
+		}
+		numb = fread(buf, 1, 256, fin);
+		if (numb <= 0) {
+			fprintf(stderr, "Cannot read %s: %s\n", lnknam,
+					strerror(errno));
+			fclose(fin);
+			continue;
+		}
+		fclose(fin);
+		buf[numb] = 0;
+		if (atoi(buf) != 1)
+			continue;
+		strcpy(mreq->ifr_name, iface);
+		numb = ioctl(sockd, SIOCGIFADDR, mreq);
+		if (numb == -1) {
+			fprintf(stderr, "Cannot get IP address of %s: %s\n",
+					iface, strerror(errno));
+			continue;
+		}
+		ipv4_addr = (struct sockaddr_in *)&mreq->ifr_addr;
+		if (!inet_ntop(AF_INET, &ipv4_addr->sin_addr, ip, 128))
+			continue;
+
 		strcat(macfile, "/address");
 		fin = fopen(macfile, "rb");
 		if (!fin) {
@@ -81,7 +132,7 @@ const struct idinfo * getinfo(int sockd)
 					macfile, strerror(errno));
 			continue;
 		}
-		numb = fread(inf.mac, 1, sizeof(inf.mac), fin);
+		numb = fread(mac, 1, 128, fin);
 		if (numb <= 0) {
 			fprintf(stderr, "Cannot read %s: %s\n", macfile,
 					strerror(errno));
@@ -89,33 +140,76 @@ const struct idinfo * getinfo(int sockd)
 			continue;
 		}
 		fclose(fin);
-		inf.mac[numb] = 0;
-		ln = strchr(inf.mac, '\n');
+		mac[numb] = 0;
+		ln = strchr(mac, '\n');
 		if (ln)
 			*ln = 0;
-		strcpy(mreq->ifr_name, inf.iface);
-		numb = ioctl(sockd, SIOCGIFADDR, mreq);
-		if (numb == -1) {
-			fprintf(stderr, "Cannot get IP address of %s: %s\n",
-					inf.iface, strerror(errno));
-			continue;
+		inf = malloc(sizeof(struct idinfo));
+		if (!inf) {
+			fprintf(stderr, "Out of Memory.\n");
+			exit(100);
 		}
-		ipv4_addr = (struct sockaddr_in *)&mreq->ifr_addr;
-		inet_ntop(AF_INET, &ipv4_addr->sin_addr, inf.ip, sizeof(inf.ip));
-		found = 1;
-		break;
+		if (inf1st == NULL)
+			inf1st = inf;
+		if (inf_prev)
+			inf_prev->nxt = inf;
+		inf->nxt = NULL;
+		inf->tmstp = tmstp;
+		strcpy(inf->iface, iface);
+		strcpy(inf->mac, mac);
+		strcpy(inf->ip, ip);
+		inf_prev = inf;
 	} while (1);
 	closedir(dir);
 	free(mreq);
-	if (!found)
-		return NULL;
-	inf.tmstp = time(NULL);
-	return &inf;
+	return inf1st;
+}
+
+static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf)
+{
+	struct timespec itm;
+	unsigned long rndsec;
+	const struct idinfo *curinf;
+	int len, sysret;
+
+	getrandom(&rndsec, sizeof(rndsec), 0);
+	itm.tv_sec = 0;
+	itm.tv_nsec = rndsec % 500000000ul;
+	for (curinf = inf; curinf; curinf = curinf->nxt) {
+		len = sprintf(buf, "lease %s { start %lu; " \
+				"hardware ethernet %s; }", curinf->ip,
+				(unsigned long)curinf->tmstp, curinf->mac);
+		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
+				serv->addr_len);
+		if (sysret == -1)
+			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+	}
+	nanosleep(&itm, NULL);
+	for (curinf = inf; curinf; curinf = curinf->nxt) {
+		len = sprintf(buf, "lease %s { start %lu; " \
+				"hardware ethernet %s; }", curinf->ip,
+				(unsigned long)curinf->tmstp, curinf->mac);
+		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
+				serv->addr_len);
+		if (sysret == -1)
+			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+	}
+	itm.tv_nsec = 1000000000ul - itm.tv_nsec;
+	nanosleep(&itm, NULL);
+	for (curinf = inf; curinf; curinf = curinf->nxt) {
+		len = sprintf(buf, "lease %s { start %lu; " \
+				"hardware ethernet %s; }", curinf->ip,
+				(unsigned long)curinf->tmstp, curinf->mac);
+		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
+				serv->addr_len);
+		if (sysret == -1)
+			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+	}
 }
 
 int main(int argc, char *argv[])
 {
-	int fin, c, retv, len, sysret;
+	int fin, c, retv;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct sigaction mact;
@@ -123,10 +217,8 @@ int main(int argc, char *argv[])
 	struct addrinfo hint, *serv_adr;
 	static const char *lidm = "127.0.0.1";
 	static const char *port = "7800";
-	const struct idinfo *inf;
+	struct idinfo *inf, *curinf, *nxt;
 	char *buf;
-	unsigned long rndsec;
-	struct timespec itm;
 
 	opterr = 0;
 	fin = 0;
@@ -194,25 +286,14 @@ int main(int argc, char *argv[])
 		retv = 100;
 		goto exit_10;
 	}
-	getrandom(&rndsec, sizeof(rndsec), 0);
-	itm.tv_sec = 0;
-	itm.tv_nsec = rndsec % 500000000ul;
-	len = sprintf(buf, "lease %s { start %lu; hardware ethernet %s; }",
-			inf->ip, (unsigned long)inf->tmstp, inf->mac);
-	sysret = sendto(serv.sock, buf, len, 0, &serv.addr, serv.addr_len);
-	if (sysret == -1)
-		fprintf(stderr, "sendto failed: %s\n", strerror(errno));
-	nanosleep(&itm, NULL);
-	sysret = sendto(serv.sock, buf, len, 0, &serv.addr, serv.addr_len);
-	if (sysret == -1)
-		fprintf(stderr, "sendto failed: %s\n", strerror(errno));
-	itm.tv_nsec = 1000000000ul - itm.tv_nsec;
-	nanosleep(&itm, NULL);
-	sysret = sendto(serv.sock, buf, len, 0, &serv.addr, serv.addr_len);
-	if (sysret == -1)
-		fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+
+	ping_lidm(&serv, inf, buf);
 
 	free(buf);
+	for (curinf = inf; curinf; curinf = nxt) {
+		nxt = curinf->nxt;
+		free(curinf);
+	}
 exit_10:
 	close(serv.sock);
 	return retv;
