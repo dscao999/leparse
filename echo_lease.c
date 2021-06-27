@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <time.h>
+#include "miscs.h"
 
 struct lease_info {
 	char mac[24];
@@ -147,7 +148,7 @@ void * check_mandb(void *dat)
 
 	retv = dbproc(inf);
 	if (retv)
-		fprintf(stderr, "Somethin wrong in DB processing.\n");
+		elog("Somethin wrong in DB processing.\n");
 	__sync_sub_and_fetch(me->nwork, 1);
 	printf("Me: %p, Info: %p, Worker: %d\n", (void *)me, (void *)me->inf, *me->nwork);
 	free(inf);
@@ -169,14 +170,14 @@ void * echo_processing(void *dat)
 	nworker = 0;
 	sysret = pthread_attr_init(&attr);
 	if (sysret) {
-		fprintf(stderr, "Cannot initialize thread attr: %s\n",
+		elog("Cannot initialize thread attr: %s\n",
 				strerror(sysret));
 		global_exit = 1;
 		return NULL;
 	}
 	sysret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 	if (sysret) {
-		fprintf(stderr, "Cannot set thread to detached: %s\n",
+		elog("Cannot set thread to detached: %s\n",
 				strerror(sysret));
 		global_exit = 1;
 		goto exit_10;
@@ -189,7 +190,7 @@ void * echo_processing(void *dat)
 		}
 		thwork = malloc(sizeof(struct thread_worker));
 		if (!thwork) {
-			fprintf(stderr, "Out of Memory.\n");
+			elog("Out of Memory.\n");
 			global_exit = 1;
 			free(inf);
 			goto exit_10;
@@ -198,7 +199,7 @@ void * echo_processing(void *dat)
 		thwork->nwork = &nworker;
 		sysret = pthread_create(&ckthrd, &attr, check_mandb, thwork);
 		if (sysret) {
-			fprintf(stderr, "Cannot create worker thread: %s\n",
+			elog("Cannot create worker thread: %s\n",
 					strerror(sysret));
 			global_exit = 1;
 			free(inf);
@@ -244,10 +245,10 @@ int main(int argc, char *argv[])
 			fin = 1;
 			break;
 		case '?':
-			fprintf(stderr, "Unknown option: %c\n", optopt);
+			elog("Unknown option: %c\n", optopt);
 			break;
 		case ':':
-			fprintf(stderr, "Missing arguments for %c\n",
+			elog("Missing arguments for %c\n",
 					(char)optopt);
 			break;
 		case 'p':
@@ -263,9 +264,10 @@ int main(int argc, char *argv[])
 	hint.ai_flags = AI_PASSIVE|AI_NUMERICSERV;
 	retv = getaddrinfo(NULL, port, &hint, &svrinfo);
 	if (retv != 0) {
-		fprintf(stderr, "getaddrinfo failed: %s\n", gai_strerror(retv));
+		elog("getaddrinfo failed: %s\n", gai_strerror(retv));
 		return 1;
 	}
+	eno = 0;
 	for (adr = svrinfo; adr != NULL; adr = adr->ai_next) {
 		sock = socket(adr->ai_family, adr->ai_socktype,
 				adr->ai_protocol);
@@ -280,7 +282,7 @@ int main(int argc, char *argv[])
 	}
 	freeaddrinfo(svrinfo);
 	if (adr == NULL) {
-		fprintf(stderr, "Cannot bind: %s.\n", strerror(eno));
+		elog("Cannot bind: %s.\n", strerror(eno));
 		return 2;
 	}
 
@@ -288,7 +290,7 @@ int main(int argc, char *argv[])
 	mact.sa_handler = sig_handler;
 	if (sigaction(SIGINT, &mact, NULL) == -1 ||
 			sigaction(SIGTERM, &mact, NULL) == -1)
-		fprintf(stderr, "Warning: cannot install signal handler: %s\n",
+		elog("Warning: cannot install signal handler: %s\n",
 				strerror(errno));
 
 	buflen = 512;
@@ -298,7 +300,7 @@ int main(int argc, char *argv[])
 
 	retv = pthread_create(&echo_thread, NULL, echo_processing, wbuf);
 	if (retv) {
-		fprintf(stderr, "Cannot create echo processing thread: %s\n",
+		elog("Cannot create echo processing thread: %s\n",
 				strerror(retv));
 		goto exit_20;
 	}
@@ -308,7 +310,7 @@ int main(int argc, char *argv[])
 		nread = recvfrom(sock, buf, buflen, 0,
 				(struct sockaddr *)&peer_addr, &peer_addr_len);
 		if (nread == -1 && errno != EINTR) {
-			fprintf(stderr, "recvfrom failed: %s\n",
+			elog("recvfrom failed: %s\n",
 					strerror(errno));
 			retv = 5;
 			goto exit_20;
@@ -336,7 +338,7 @@ int main(int argc, char *argv[])
 		mac = strtok(NULL, " ;{}");
 		linfo = malloc(sizeof(struct lease_info));
 		if (!linfo) {
-			fprintf(stderr, "Out of Memory.\n");
+			elog("Out of Memory.\n");
 			global_exit = 1;
 			break;
 		}
@@ -348,14 +350,14 @@ int main(int argc, char *argv[])
 		if (cirbuf_search(wbuf, linfo))
 			continue;
 		while (cirbuf_insert(wbuf, linfo) == -1) {
-			fprintf(stderr, "Stall for one second.\n");
+			elog("Stall for one second.\n");
 			nanosleep(&itv, NULL);
 		}
 	}
 	printf("exit...\n");
 	retv = pthread_cancel(echo_thread);
 	if (retv)
-		fprintf(stderr, "pthread kill failed: %s\n", strerror(retv));
+		elog("pthread kill failed: %s\n", strerror(retv));
 	pthread_join(echo_thread, NULL);
 
 exit_20:
