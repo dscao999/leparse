@@ -174,7 +174,7 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf)
 
 	getrandom(&rndsec, sizeof(rndsec), 0);
 	itm.tv_sec = 0;
-	itm.tv_nsec = rndsec % 500000000ul;
+	itm.tv_nsec = rndsec % 1000000000ul;
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
 		len = sprintf(buf, "lease %s { start %lu; " \
 				"hardware ethernet %s; }", curinf->ip,
@@ -184,17 +184,6 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf)
 		if (sysret == -1)
 			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
 	}
-	nanosleep(&itm, NULL);
-	for (curinf = inf; curinf; curinf = curinf->nxt) {
-		len = sprintf(buf, "lease %s { start %lu; " \
-				"hardware ethernet %s; }", curinf->ip,
-				(unsigned long)curinf->tmstp, curinf->mac);
-		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
-				serv->addr_len);
-		if (sysret == -1)
-			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
-	}
-	itm.tv_nsec = 1000000000ul - itm.tv_nsec;
 	nanosleep(&itm, NULL);
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
 		len = sprintf(buf, "lease %s { start %lu; " \

@@ -9,11 +9,18 @@
 #include <signal.h>
 #include <assert.h>
 #include <pthread.h>
+#include <time.h>
 
 struct lease_info {
 	char mac[24];
 	char ip[64];
-	time_t tm;
+	time_t tm, stm;
+	volatile int fin;
+};
+
+struct thread_worker {
+	struct lease_info *inf;
+	volatile int *nwork;
 };
 
 #define maxeles 1024
@@ -22,6 +29,7 @@ struct lease_info {
 struct cirbuf {
 	volatile int head;
 	volatile int tail;
+	volatile int *global_exit;
 	pthread_cond_t cond;
 	pthread_mutex_t mutex;
 	struct lease_info *linfs[maxeles];
@@ -44,10 +52,11 @@ static int cirbuf_search(struct cirbuf *cbuf, struct lease_info *linf)
 	return found;
 }
 
-static inline void cirbuf_init(struct cirbuf *cbuf)
+static inline void cirbuf_init(struct cirbuf *cbuf, volatile int *global_exit)
 {
 	cbuf->head = 0;
 	cbuf->tail = 0;
+	cbuf->global_exit = global_exit;
 	pthread_cond_init(&cbuf->cond, NULL);
 	pthread_mutex_init(&cbuf->mutex, NULL);
 }
@@ -99,12 +108,19 @@ static inline int cirbuf_insert(struct cirbuf *cbuf, struct lease_info *inf)
 static inline struct lease_info * cirbuf_remove(struct cirbuf *cbuf)
 {
 	struct lease_info *inf;
+	time_t tm;
 
+	inf = NULL;
 	pthread_mutex_lock(&cbuf->mutex);
 	while (cirbuf_empty(cbuf))
 		pthread_cond_wait(&cbuf->cond, &cbuf->mutex);
+	assert(cirbuf_empty(cbuf) == 0);
+	tm = time(NULL);
 	inf = cbuf->linfs[cbuf->tail];
-	cbuf->tail = cirbuf_tail_next(cbuf);
+	if (tm - inf->stm > 2)
+		cbuf->tail = cirbuf_tail_next(cbuf);
+	else
+		inf = NULL;
 	pthread_mutex_unlock(&cbuf->mutex);
 	return inf;
 }
@@ -117,6 +133,89 @@ void sig_handler(int sig)
 		global_exit = 1;
 }
 
+int dbproc(const struct lease_info *inf)
+{
+	printf("Processed. Mac: %s, IP: %s\n", inf->mac, inf->ip);
+	return 0;
+}
+
+void * check_mandb(void *dat)
+{
+	struct thread_worker *me = (struct thread_worker *)dat;
+	struct lease_info *inf = me->inf;
+	int retv;
+
+	retv = dbproc(inf);
+	if (retv)
+		fprintf(stderr, "Somethin wrong in DB processing.\n");
+	__sync_sub_and_fetch(me->nwork, 1);
+	printf("Me: %p, Info: %p, Worker: %d\n", (void *)me, (void *)me->inf, *me->nwork);
+	free(inf);
+	free(me);
+	return NULL;
+}
+
+void * echo_processing(void *dat)
+{
+	struct cirbuf *wbuf = (struct cirbuf *)dat;
+	struct lease_info *inf;
+	pthread_t ckthrd;
+	pthread_attr_t attr;
+	int sysret;
+	volatile int nworker;
+	struct thread_worker *thwork;
+	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
+
+	nworker = 0;
+	sysret = pthread_attr_init(&attr);
+	if (sysret) {
+		fprintf(stderr, "Cannot initialize thread attr: %s\n",
+				strerror(sysret));
+		global_exit = 1;
+		return NULL;
+	}
+	sysret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	if (sysret) {
+		fprintf(stderr, "Cannot set thread to detached: %s\n",
+				strerror(sysret));
+		global_exit = 1;
+		goto exit_10;
+	}
+	do {
+		inf = cirbuf_remove(wbuf);
+		if (!inf) {
+			nanosleep(&itv, NULL);
+			continue;
+		}
+		thwork = malloc(sizeof(struct thread_worker));
+		if (!thwork) {
+			fprintf(stderr, "Out of Memory.\n");
+			global_exit = 1;
+			free(inf);
+			goto exit_10;
+		}
+		thwork->inf = inf;
+		thwork->nwork = &nworker;
+		sysret = pthread_create(&ckthrd, &attr, check_mandb, thwork);
+		if (sysret) {
+			fprintf(stderr, "Cannot create worker thread: %s\n",
+					strerror(sysret));
+			global_exit = 1;
+			free(inf);
+			free(thwork);
+			goto exit_10;
+		}
+		__sync_add_and_fetch(&nworker, 1);
+	} while (global_exit == 0);
+
+exit_10:
+	pthread_attr_destroy(&attr);
+	while (nworker) {
+		printf("nworker: %d\n", nworker);
+		nanosleep(&itv, NULL);
+	}
+	return NULL;
+}
 
 int main(int argc, char *argv[])
 {
@@ -128,12 +227,13 @@ int main(int argc, char *argv[])
 	ssize_t nread;
 	char *buf, *tok, *ip, *start, *mac;
 	const char *port = "7800";
-	struct cirbuf *wbuf, *rbuf;
+	struct cirbuf *wbuf;
 	struct lease_info *linfo;
 	time_t tm;
 	const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 	extern char *optarg;
 	extern int opterr, optopt;
+	pthread_t echo_thread;
 
 	opterr = 0;
 	fin = 0;
@@ -192,12 +292,16 @@ int main(int argc, char *argv[])
 				strerror(errno));
 
 	buflen = 512;
-	buf = malloc(buflen+2*sizeof(struct cirbuf));
+	buf = malloc(buflen+sizeof(struct cirbuf));
 	wbuf = (struct cirbuf *)(buf + buflen);
-	cirbuf_init(wbuf);
-	rbuf = wbuf + 1;
-	cirbuf_init(rbuf);
+	cirbuf_init(wbuf, &global_exit);
 
+	retv = pthread_create(&echo_thread, NULL, echo_processing, wbuf);
+	if (retv) {
+		fprintf(stderr, "Cannot create echo processing thread: %s\n",
+				strerror(retv));
+		goto exit_20;
+	}
 	retv = 0;
 	while (global_exit == 0) {
 		peer_addr_len = sizeof(struct sockaddr_storage);
@@ -237,9 +341,11 @@ int main(int argc, char *argv[])
 			break;
 		}
 		linfo->tm = tm;
+		linfo->fin = 0;
+		linfo->stm = time(NULL);
 		strcpy(linfo->mac, mac);
 		strcpy(linfo->ip, ip);
-		if (cirbuf_search(rbuf, linfo) || cirbuf_search(wbuf, linfo))
+		if (cirbuf_search(wbuf, linfo))
 			continue;
 		while (cirbuf_insert(wbuf, linfo) == -1) {
 			fprintf(stderr, "Stall for one second.\n");
@@ -247,9 +353,12 @@ int main(int argc, char *argv[])
 		}
 	}
 	printf("exit...\n");
+	retv = pthread_cancel(echo_thread);
+	if (retv)
+		fprintf(stderr, "pthread kill failed: %s\n", strerror(retv));
+	pthread_join(echo_thread, NULL);
 
 exit_20:
-	cirbuf_exit(rbuf);
 	cirbuf_exit(wbuf);
 	free(buf);
 	close(sock);

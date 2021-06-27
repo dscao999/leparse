@@ -8,6 +8,8 @@ all: fmon lecho dirnot plidm
 fmon: lease_mon.o file_monitor.o lease_parse.o
 	$(LINK.o) $^ -o $@
 
+lecho: CFLAGS += -pthread
+lecho: LDFLAGS += -pthread
 lecho: echo_lease.o
 	$(LINK.o) $^ -o $@
 
