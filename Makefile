@@ -1,6 +1,6 @@
 CFLAGS = -g -Wall -Wpedantic -I$(HOME)/devel/include
 LDFLAGS = -g -L$(HOME)/devel/lib
-LIBS = -lmiscs
+LIBS = -lmiscs -lmariadb
 
 .PHONY: all clean
 
@@ -11,7 +11,7 @@ fmon: lease_mon.o file_monitor.o lease_parse.o
 
 lecho: CFLAGS += -pthread
 lecho: LDFLAGS += -pthread
-lecho: echo_lease.o
+lecho: echo_lease.o dbconnect.o
 	$(LINK.o) $^ $(LIBS) -o $@
 
 dirnot:	inotify_dir.o

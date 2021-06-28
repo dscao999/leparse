@@ -16,7 +16,7 @@ struct lease_info {
 	char mac[24];
 	char ip[64];
 	time_t tm, stm;
-	volatile int fin;
+	int leave;
 };
 
 struct thread_worker {
@@ -94,15 +94,14 @@ static inline int cirbuf_insert(struct cirbuf *cbuf, struct lease_info *inf)
 
 	if (cirbuf_full(cbuf))
 		return -1;
+	pthread_mutex_lock(&cbuf->mutex);
 	if (cirbuf_empty(cbuf))
 		wake = 1;
 	cbuf->linfs[cbuf->head] = inf;
 	cbuf->head = cirbuf_head_next(cbuf);
-	if (wake) {
-		pthread_mutex_lock(&cbuf->mutex);
+	if (wake)
 		pthread_cond_signal(&cbuf->cond);
-		pthread_mutex_unlock(&cbuf->mutex);
-	}
+	pthread_mutex_unlock(&cbuf->mutex);
 	return 0;
 }
 
@@ -188,6 +187,9 @@ void * echo_processing(void *dat)
 			nanosleep(&itv, NULL);
 			continue;
 		}
+		if (inf->mac[0] == 0)
+			continue;
+
 		thwork = malloc(sizeof(struct thread_worker));
 		if (!thwork) {
 			elog("Out of Memory.\n");
@@ -222,7 +224,7 @@ int main(int argc, char *argv[])
 {
 	struct sigaction mact;
 	struct addrinfo hint, *svrinfo, *adr;
-	int retv, sock, eno, buflen, fin, c;
+	int retv, sock, eno, buflen, fin, c, leave;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
@@ -231,10 +233,11 @@ int main(int argc, char *argv[])
 	struct cirbuf *wbuf;
 	struct lease_info *linfo;
 	time_t tm;
-	const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
+	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 	extern char *optarg;
 	extern int opterr, optopt;
 	pthread_t echo_thread;
+	static struct lease_info fake_inf;
 
 	opterr = 0;
 	fin = 0;
@@ -321,7 +324,8 @@ int main(int argc, char *argv[])
 		printf("%s\n", buf);
 
 		tok = strtok(buf, " ;{}");
-		if (strcmp(buf, "lease") != 0)
+		leave = strcmp(buf, "leave") == 0;
+		if (strcmp(buf, "lease") != 0 && !leave)
 			continue;
 		ip = strtok(NULL, " ;{}");
 		tok = strtok(NULL, " ;{}");
@@ -343,7 +347,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 		linfo->tm = tm;
-		linfo->fin = 0;
+		linfo->leave = leave;
 		linfo->stm = time(NULL);
 		strcpy(linfo->mac, mac);
 		strcpy(linfo->ip, ip);
@@ -354,10 +358,13 @@ int main(int argc, char *argv[])
 			nanosleep(&itv, NULL);
 		}
 	}
+	if (cirbuf_empty(wbuf)) {
+		linfo = &fake_inf;
+		linfo->stm = time(NULL) - 5;
+		linfo->mac[0] = 0;
+		cirbuf_insert(wbuf, linfo);
+	}
 	printf("exit...\n");
-	retv = pthread_cancel(echo_thread);
-	if (retv)
-		elog("pthread kill failed: %s\n", strerror(retv));
 	pthread_join(echo_thread, NULL);
 
 exit_20:
