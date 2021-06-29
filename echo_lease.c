@@ -11,13 +11,7 @@
 #include <pthread.h>
 #include <time.h>
 #include "miscs.h"
-
-struct lease_info {
-	char mac[24];
-	char ip[64];
-	time_t tm, stm;
-	int leave;
-};
+#include "dbproc.h"
 
 struct thread_worker {
 	struct lease_info *inf;
@@ -133,25 +127,20 @@ void sig_handler(int sig)
 		global_exit = 1;
 }
 
-int dbproc(const struct lease_info *inf)
-{
-	printf("Processed. Mac: %s, IP: %s\n", inf->mac, inf->ip);
-	return 0;
-}
-
 void * check_mandb(void *dat)
 {
 	struct thread_worker *me = (struct thread_worker *)dat;
 	struct lease_info *inf = me->inf;
 	int retv;
+	volatile int *nwrk;
 
+	nwrk = me->nwork;
 	retv = dbproc(inf);
 	if (retv)
 		elog("Somethin wrong in DB processing.\n");
-	__sync_sub_and_fetch(me->nwork, 1);
-	printf("Me: %p, Info: %p, Worker: %d\n", (void *)me, (void *)me->inf, *me->nwork);
 	free(inf);
 	free(me);
+	__sync_sub_and_fetch(nwrk, 1);
 	return NULL;
 }
 
@@ -368,6 +357,10 @@ int main(int argc, char *argv[])
 	pthread_join(echo_thread, NULL);
 
 exit_20:
+	while (!cirbuf_empty(wbuf)) {
+		linfo = cirbuf_remove(wbuf);
+		free(linfo);
+	}
 	cirbuf_exit(wbuf);
 	free(buf);
 	close(sock);
