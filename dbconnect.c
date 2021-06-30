@@ -30,6 +30,7 @@ int maria_init(struct maria *db, const char *dbname)
 		retv = -2;
 		goto exit_20;
 	}
+	db->res = NULL;
 	return retv;
 
 exit_20:
@@ -41,11 +42,13 @@ exit_10:
 
 void maria_exit(struct maria *db)
 {
+	if (db->res)
+		mysql_free_result(db->res);
 	mysql_close(db->dbh);
 	free(db->stmt);
 }
 
-int maria_query(struct maria *db, const char *fmt, ...)
+int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 {
 	int retv;
 	va_list ap;
@@ -54,8 +57,19 @@ int maria_query(struct maria *db, const char *fmt, ...)
 	vsprintf(db->stmt, fmt, ap);
 	va_end(ap);
 	retv = mysql_query(db->dbh, db->stmt);
-	if (retv)
+	if (retv) {
 		elog("DB Statement '%s' failed: %s\n", db->stmt,
 				mysql_error(db->dbh));
+		return retv;
+	}
+	if (!fetch)
+		return retv;
+
+	db->res = mysql_store_result(db->dbh);
+	if (!db->res) {
+		elog("Cannto store the query '%s' result set: %s\n",
+				db->stmt, mysql_error(db->dbh));
+		retv = -5;
+	}
 	return retv;
 }

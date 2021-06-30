@@ -13,11 +13,11 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	int retv = 0;
 
 	if (!mac2) {
-		retv = maria_query(db, "update citizen set last = '%lu', " \
+		retv = maria_query(db, 0, "update citizen set last = '%lu', " \
 				" ip = '%s' where mac = '%s'",
 				inf->tm, inf->ip, inf->mac);
 	} else {
-		retv = maria_query(db, "update citizen set last = '%lu', " \
+		retv = maria_query(db, 0, "update citizen set last = '%lu', " \
 				"ip2 = '%s' where mac2 = '%s'",
 				inf->tm, inf->ip, inf->mac);
 	}
@@ -32,7 +32,6 @@ int dbproc(const struct lease_info *inf)
 	struct maria *db;
 	int retv = 0;
 	int nfields, found, mac2;
-	MYSQL_RES *res;
 	MYSQL_ROW row;
 	time_t tm;
 
@@ -49,46 +48,32 @@ int dbproc(const struct lease_info *inf)
 		goto exit_10;
 	}
 	printf("DB Connected.\n");
-	retv = maria_query(db, "select count(*) from barbarian where " \
+	retv = maria_query(db, 1, "select count(*) from barbarian where " \
 			"mac = '%s'", inf->mac);
 	if (retv) {
 		retv = -3;
 		goto exit_20;
 	}
-	res = mysql_store_result(db->dbh);
-	if (!res) {
-		elog("Cannot get DB result: %s\n", mysql_error(db->dbh));
-		retv = -4;
-		goto exit_20;
-	}
-	nfields = mysql_num_fields(res);
-	assert(nfields == 1);
 	found = 0;
-	row = mysql_fetch_row(res);
+	row = mysql_fetch_row(db->res);
 	if (row && row[0])
 		found = atoi(row[0]);
 	else
 		elog("Internal logic error: no result from count(*)\n");
-	mysql_free_result(res);
+	maria_free_result(db);
 	if (found)
 		goto exit_20;
 
-	retv = maria_query(db, "select mac, mac2, last from citizen where " \
+	retv = maria_query(db, 1, "select mac, mac2, last from citizen where " \
 			"mac = '%s' or mac2 = '%s'", inf->mac, inf->mac);
 	if (retv) {
-		retv = -5;
-		goto exit_20;
-	}
-	res = mysql_store_result(db->dbh);
-	if (!res) {
-		elog("Cannot get DB result: %s\n", mysql_error(db->dbh));
 		retv = -6;
 		goto exit_20;
 	}
-	nfields = mysql_num_fields(res);
+	nfields = mysql_num_fields(db->res);
 	assert(nfields == 3);
 	found = 0;
-	row = mysql_fetch_row(res);
+	row = mysql_fetch_row(db->res);
 	if (row) {
 		tm = atoll(row[2]);
 		if (tm < inf->tm) {
@@ -97,15 +82,15 @@ int dbproc(const struct lease_info *inf)
 				mac2 = 1;
 			update_citizen(db, inf, mac2);
 		}
-		mysql_free_result(res);
+		row = mysql_fetch_row(db->res);
+		if (row)
+			elog("Internal logic error: dublicate citizen records.\n");
+		maria_free_result(db);
 		goto exit_20;
 	}
-	row = mysql_fetch_row(res);
-	if (row)
-		elog("Internal logic error: dublicate citizen records.\n");
-	mysql_free_result(res);
+	maria_free_result(db);
 
-	retv = maria_query(db, "insert into citizen (mac, ip, birth, last) " \
+	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, last) "\
 			"values ('%s', '%s', %lu, %lu)", inf->mac, inf->ip,
 			inf->tm, inf->tm);
 	if (retv) {
