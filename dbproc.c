@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <string.h>
+#include <linux/random.h>
+#include <errno.h>
 #include "miscs.h"
 #include "dbproc.h"
 #include "dbconnect.h"
@@ -30,17 +32,23 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 int dbproc(const struct lease_info *inf)
 {
 	struct maria *db;
-	int retv = 0;
+	int retv = 0, idx;
 	int nfields, found, mac2;
 	MYSQL_ROW row;
 	time_t tm;
+	char *passwd, *hostname;
+	unsigned char *passwd_new, *curp;
+	FILE *rndh;
 
-	db = malloc(sizeof(struct maria));
+	db = malloc(sizeof(struct maria)+64);
 	if (!db) {
 		elog("Out of Memory.\n");
 		retv = -1;
 		return retv;
 	}
+	passwd = (char *)(db + 1);
+	hostname = passwd + 24;
+	passwd_new = (unsigned char *)(hostname + 16);
 	retv = maria_init(db, "lidm");
 	if (retv != 0) {
 		elog("Cannot initialize db connection to %s\n", "lidm");
@@ -89,7 +97,6 @@ int dbproc(const struct lease_info *inf)
 		goto exit_20;
 	}
 	maria_free_result(db);
-
 	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, last) "\
 			"values ('%s', '%s', %lu, %lu)", inf->mac, inf->ip,
 			inf->tm, inf->tm);
@@ -97,7 +104,36 @@ int dbproc(const struct lease_info *inf)
 		retv = -5;
 		goto exit_20;
 	}
+	retv = maria_query(db, 1, "select hostname, password, hostseq from " \
+			"citizen where mac = '%s'", inf->mac);
+	if (retv) {
+		retv = -6;
+		goto exit_20;
+	}
+	row = mysql_fetch_row(db->res);
+	if (!row) {
+		elog("Internal logic error, no default password.\n");
+		retv = -7;
+		goto exit_20;
+	}
+	sprintf(hostname, "%s%04d", row[0], atoi(row[2]));
+	strcpy(passwd, row[1]);
+	maria_free_result(db);
+	rndh = fopen("/dev/urandom", "rb");
+	if (!rndh) {
+		elog("Cannot open /dev/urandom: %s\n", strerror(errno));
+		retv = -8;
+		goto exit_20;
+	}
+	for (idx = 0, curp = passwd_new; idx < 10; idx++, curp++) {
+		do
+			fread(curp, 1, 1, rndh);
+		while (*curp < 0x21 || *curp > 0x7e);
 
+	};
+	*curp = 0;
+	fclose(rndh);
+	printf("hostname: %s, password: '%s'\n", hostname, passwd_new);
 exit_20:
 	maria_exit(db);
 exit_10:
