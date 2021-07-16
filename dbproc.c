@@ -91,9 +91,7 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 	pid_t sshpid;
 	char passwd[16];
 	static const char *fmt = "sshpass -p %s ssh -l %s %s sudo -S " \
-			  "./lios_lock_probe.py --hostname %s --password '%s'";
-/*	static const char *fmt = "sshpass -p %s ssh -l %s %s " \
-				  "./lios_lock_probe.py --hostname %s --password '%s'";*/
+			  "lios_lock_probe.py --hostname %s --password '%s'";
 
 	*res = 0;
 	cmdbuf = malloc(512+sizeof(char *)*18);
@@ -132,16 +130,6 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 	sigemptyset(&sset);
 	sigaddset(&sset, SIGCHLD);
 	if (sshpid == 0) {
-		char *arg;
-		int ii;
-		for (ii = 0; ii < 15; ii++) {
-			arg = ssharg[ii];
-			if (arg == NULL)
-				break;
-			printf("%s ", arg);
-		}
-		printf("\n");
-
 		close(pfdin[0]);
 		fdout = pfdin[1];
 		close(pfdout[1]);
@@ -162,12 +150,14 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 	fdout = pfdout[1];
 	fdin = pfdin[0];
 	numb = write(fdout, passwd, strlen(passwd));
-	printf("Write out passwd: %s\n", passwd);
+	if (numb == -1)
+		fprintf(stdout, "Write password through pipe failed: %s\n",
+				strerror(errno));
 	sysret = waitpid(sshpid, &retv, 0);
 	numb = read(fdin, res, reslen);
 	*(res+numb) = 0;
-	printf("ssh exit code: %d\n", retv);
-	printf("ssh probe result: %s\n", res);
+	if (retv != 0)
+		fprintf(stderr, "ssh probe failed: %s\n", res);
 
 exit_30:
 	close(pfdout[0]);
