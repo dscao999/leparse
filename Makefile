@@ -4,7 +4,7 @@ LIBS = -lmiscs -lmariadb
 
 .PHONY: all clean
 
-all: release fmon lecho dirnot plidm
+all: fmon lecho dirnot plidm
 
 fmon: lease_mon.o file_monitor.o lease_parse.o
 	$(LINK.o) $^ -o $@
