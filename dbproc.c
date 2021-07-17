@@ -14,89 +14,21 @@
 #include "dbproc.h"
 #include "dbconnect.h"
 
-static int scp_execute(char *res, int reslen, const char *ip,
-		const char *fname)
+static int pipe_execute(char *res, int reslen, const char *cmdpath,
+		const char *cmdline, const char *input)
 {
-	struct stat mst;
-	int sysret, idx, pfdin[2], fdout, fdin;
-	int retv = -1, numb;
-	char *cmdbuf, **scparg, *curchr;
-	pid_t scpid;
-	static const char *fmt = "scp -o BatchMode=yes %s root@%s:";
+	int sysret, retv, pfdin[2], pfdout[2], idx;
+	int fdout, fdin;
+	char *curchr, *args[20], *cmdbuf;
+	pid_t subpid;
+	int numb;
 
-	sysret = stat(fname, &mst);
-	if (sysret == -1) {
-		fprintf(stderr, "No such file %s: %s\n", fname,
-				strerror(errno));
-		return -errno;
+	cmdbuf = malloc(strlen(cmdline)+1);
+	if (!cmdbuf) {
+		fprintf(stderr, "Out of Memory.\n");
+		return -100;
 	}
-	cmdbuf = malloc(512+sizeof(char *)*6);
-	scparg = (char **)(cmdbuf + 512);
-	sprintf(cmdbuf, fmt, fname, ip);
-	idx = 0;
-	curchr = strtok(cmdbuf, " ");
-	while (curchr && idx < 5) {
-		scparg[idx++] = curchr;
-		curchr = strtok(NULL, " ");
-	}
-	scparg[idx] = NULL;
-	sysret = pipe(pfdin);
-	if (sysret == -1) {
-		fprintf(stderr, "pipe in failed: %s\n", strerror(errno));
-		retv = -errno;
-		goto exit_10;
-	}
-	scpid = fork();
-	if (scpid == -1) {
-		fprintf(stderr, "fork failed: %s\n", strerror(errno));
-		goto exit_20;
-	}
-	if (scpid == 0) {
-		fdout = pfdin[1];
-		close(pfdin[0]);
-		fclose(stdout);
-		fclose(stderr);
-		stdout = fdopen(dup(fdout), "w");
-		stderr = fdopen(dup(fdout), "w");
-		close(fdout);
-		sysret = execvp("/usr/bin/scp", scparg);
-		if (sysret == -1)
-			fprintf(stderr, "exec failed %s\n", strerror(errno));
-		exit(errno);
-	}
-	sigset_t sset;
-	sigemptyset(&sset);
-	sigaddset(&sset, SIGCHLD);
-	sysret = waitpid(scpid, &retv, 0);
-	fdin = pfdin[0];
-	numb = read(fdin, res, reslen);
-	res[numb] = 0;
-	printf("scp code: %d\n", retv);
-	printf("scp result: %s\n", res);
-
-exit_20:
-	close(pfdin[0]);
-	close(pfdin[1]);
-exit_10:
-	free(cmdbuf);
-	return retv;
-}
-
-static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
-{
-	int pfdin[2], pfdout[2], idx, sysret, retv;
-	int fdin, fdout, numb;
-	char *cmdbuf, *curchr;
-	char **ssharg;
-	pid_t sshpid;
-	char passwd[16];
-	static const char *fmt = "sshpass -p %s ssh -l %s %s sudo -S " \
-			  "lios_lock_probe.py --hostname %s --password '%s'";
-
-	*res = 0;
-	cmdbuf = malloc(512+sizeof(char *)*18);
-	ssharg = (char **)(cmdbuf+512);
-
+	strcpy(cmdbuf, cmdline);
 	retv = pipe(pfdin);
 	if (retv == -1) {
 		fprintf(stderr, "pipe failed: %s\n", strerror(errno));
@@ -109,27 +41,20 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 		retv = -errno;
 		goto exit_20;
 	}
-	sprintf(cmdbuf, fmt, oinf->passwd, oinf->user, oinf->ip,
-			oinf->hostname, oinf->passwd_new);
 	idx = 0;
 	curchr = strtok(cmdbuf, " ");
-	while (curchr && idx < 17) {
-		ssharg[idx++] = curchr;
+	while (curchr && idx < sizeof(args)/sizeof(char *) - 1) {
+		args[idx++] = curchr;
 		curchr = strtok(NULL, " ");
 	}
-	ssharg[idx] = NULL;
-	strcpy(passwd, oinf->passwd);
-	strcat(passwd, "\n");
-	sshpid = fork();
-	if (sshpid == -1) {
+	args[idx] = NULL;
+	subpid = fork();
+	if (subpid == -1) {
 		fprintf(stderr, "fork failed: %s\n", strerror(errno));
 		retv = -errno;
 		goto exit_30;
 	}
-	sigset_t sset;
-	sigemptyset(&sset);
-	sigaddset(&sset, SIGCHLD);
-	if (sshpid == 0) {
+	if (subpid == 0) {
 		close(pfdin[0]);
 		fdout = pfdin[1];
 		close(pfdout[1]);
@@ -142,30 +67,111 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 		stderr = fdopen(dup(fdout), "w");
 		close(fdin);
 		close(fdout);
-		sysret = execv("/usr/bin/sshpass", ssharg);
+		sysret = execv(cmdpath, args);
 		if (sysret == -1)
-			fprintf(stderr, "exec failed: %s\n", strerror(errno));
+			fprintf(stderr, "execv failed: %s\n", strerror(errno));
 		exit(1);
 	}
 	fdout = pfdout[1];
 	fdin = pfdin[0];
-	numb = write(fdout, passwd, strlen(passwd));
-	if (numb == -1)
-		fprintf(stdout, "Write password through pipe failed: %s\n",
-				strerror(errno));
-	sysret = waitpid(sshpid, &retv, 0);
+	if (input) {
+		numb = write(fdout, input, strlen(input));
+		if (numb == -1)
+			fprintf(stdout, "Write input through pipe failed: %s\n",
+					strerror(errno));
+	}
+	sysret = waitpid(subpid, &retv, 0);
 	numb = read(fdin, res, reslen);
 	*(res+numb) = 0;
 	if (retv != 0)
-		fprintf(stderr, "ssh probe failed: %s\n", res);
+		fprintf(stderr, "execution failed, command: %s\nresponse: %s\n",
+				cmdline, res);
 
 exit_30:
 	close(pfdout[0]);
 	close(pfdout[1]);
+
 exit_20:
 	close(pfdin[0]);
 	close(pfdin[1]);
+
 exit_10:
+	free(cmdbuf);
+	return retv;
+}
+
+static int scp_execute(char *res, int reslen, const char *ip,
+		const char *fname)
+{
+	struct stat mst;
+	char *cmdbuf, bname[128];
+	const char *lsl;
+	int sysret, retv = -1;
+	static const char *cpfmt = "scp -o BatchMode=yes %s root@%s:";
+	static const char *exfmt = "ssh -o BatchMode=yes -l root %s ./%s";
+
+	sysret = stat(fname, &mst);
+	if (sysret == -1) {
+		fprintf(stderr, "No such file %s: %s\n", fname,
+				strerror(errno));
+		return -errno;
+	}
+	cmdbuf = malloc(512);
+	if (!cmdbuf) {
+		fprintf(stderr, "Out of Memory.\n");
+		return -100;
+	}
+	sprintf(cmdbuf, cpfmt, fname, ip);
+	retv = pipe_execute(res, reslen, "/usr/bin/scp", cmdbuf, NULL);
+	if (retv != 0)
+		goto exit_10;
+	lsl = strrchr(fname, '/');
+	if (lsl)
+		strcpy(bname, lsl+1);
+	else
+		strcpy(bname, fname);
+	sprintf(cmdbuf, exfmt, ip, bname);
+	retv = pipe_execute(res, reslen, "/usr/bin/ssh", cmdbuf, NULL);
+
+exit_10:
+	free(cmdbuf);
+	return retv;
+}
+
+static inline void ssh_remove_stale_ip(const char *ip)
+{
+	char *cmd, *res;
+	static const char *fmt = "ssh-keygen -R %s";
+
+	cmd = malloc(1024);
+	res = cmd + 512;
+	sprintf(cmd, fmt, ip);
+	pipe_execute(res, 512, "/usr/bin/ssh-keygen", cmd, NULL);
+	free(cmd);
+}
+
+static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
+{
+	int retv;
+	char *cmdbuf;
+	char *passwd, *input;
+	static const char *fmt = "sshpass -p %s ssh -l %s %s sudo -S " \
+			  "lios_lock_probe.py --hostname %s --password '%s' " \
+			  "--username %s";
+
+	ssh_remove_stale_ip(oinf->ip);
+	*res = 0;
+	cmdbuf = malloc(512+64);
+	sprintf(cmdbuf, fmt, oinf->passwd, oinf->user, oinf->ip,
+			oinf->hostname, oinf->passwd_new, oinf->user);
+	passwd = cmdbuf + 512;
+	input = passwd + 16;
+	strcpy(passwd, oinf->passwd);
+	strcat(passwd, "\n");
+	strcpy(input, passwd);
+	strcat(input, passwd);
+	strcat(input, passwd);
+	retv = pipe_execute(res, reslen, "/usr/bin/sshpass", cmdbuf, input);
 	free(cmdbuf);
 	return retv;
 }
@@ -193,6 +199,19 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	if (retv)
 		elog("Cannot update citizen.\n");
 			
+	return retv;
+}
+
+static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
+{
+	char *cmdline;
+	int retv;
+	static const char *fmt = "sshpass -p %s ssh-copy-id %s@%s";
+
+	cmdline = malloc(128);
+	sprintf(cmdline, fmt, oinf->passwd_new, oinf->user, oinf->ip);
+	retv = pipe_execute(res, reslen, "/usr/bin/sshpass", cmdline, NULL);
+	free(cmdline);
 	return retv;
 }
 
@@ -302,7 +321,13 @@ int dbproc(const struct lease_info *inf)
 	for (idx = 0, curp = oinf->passwd_new; idx < 10; idx++, curp++) {
 		do
 			fread(curp, 1, 1, rndh);
-		while (*curp < 0x21 || *curp > 0x7e || *curp == '\'' || *curp == '"');
+		while (*curp < 0x21 || *curp > 0x7e || *curp == '\'' ||
+				*curp == '"' || *curp == ')' || *curp == '(' ||
+				*curp == '<' || *curp == '>' || *curp == '|' ||
+				*curp == '&' || *curp == '}' || *curp == '{' ||
+				*curp == '#' || *curp == '$' || *curp == ';' ||
+				*curp == '[' || *curp == ']' || *curp == ',' ||
+				*curp == '\\');
 
 	};
 	*curp = 0;
@@ -310,6 +335,24 @@ int dbproc(const struct lease_info *inf)
 	printf("new hostname: %s, new password: '%s'\n", oinf->hostname,
 			oinf->passwd_new);
 	retv = ssh_probe(buf, 1024, oinf);
+	if (retv != 0) {
+		fprintf(stderr, "ssh_probe failed\n");
+		retv = -6;
+		goto exit_20;
+	}
+	retv = maria_query(db, 0, "update citizen set hostname = '%s', " \
+			"password= '%s' where mac = '%s'", oinf->hostname,
+			oinf->passwd_new, inf->mac);
+	if (retv) {
+		retv = -7;
+		goto exit_20;
+	}
+	retv = ssh_copyid(buf, 1024, oinf);
+	if (retv != 0) {
+		fprintf(stderr, "ssh_copyid failed\n");
+		retv = -8;
+		goto exit_20;
+	}
 
 exit_20:
 	maria_exit(db);
