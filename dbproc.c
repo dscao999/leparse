@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <poll.h>
 #include <linux/random.h>
 #include <errno.h>
 #include <signal.h>
@@ -81,7 +82,14 @@ static int pipe_execute(char *res, int reslen, const char *cmdpath,
 					strerror(errno));
 	}
 	sysret = waitpid(subpid, &retv, 0);
-	numb = read(fdin, res, reslen);
+	struct pollfd pfd;
+	pfd.fd = fdin;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	numb = 0;
+	sysret = poll(&pfd, 1, 100);
+	if (sysret == 1 && (pfd.revents & POLLIN) != 0)
+		numb = read(fdin, res, reslen);
 	*(res+numb) = 0;
 	if (retv != 0)
 		fprintf(stderr, "execution failed, command: %s\nresponse: %s\n",
@@ -204,13 +212,27 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 
 static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 {
-	char *cmdline;
+	char *cmdline, *passwd, *input;
 	int retv;
-	static const char *fmt = "sshpass -p %s ssh-copy-id %s@%s";
+	static const char *cpyfmt = "sshpass -p %s ssh-copy-id %s@%s";
+	static const char *tstfmt = "ssh -l %s %s sudo -S cp -r .ssh /root/";
 
-	cmdline = malloc(128);
-	sprintf(cmdline, fmt, oinf->passwd_new, oinf->user, oinf->ip);
+	cmdline = malloc(512);
+	passwd = cmdline + 256;
+	input = passwd + 128;
+	sprintf(cmdline, cpyfmt, oinf->passwd_new, oinf->user, oinf->ip);
 	retv = pipe_execute(res, reslen, "/usr/bin/sshpass", cmdline, NULL);
+	if (retv != 0)
+		goto exit_10;
+	sprintf(cmdline, tstfmt, oinf->user, oinf->ip);
+	strcpy(passwd, oinf->passwd_new);
+	strcat(passwd, "\n");
+	strcpy(input, passwd);
+	strcat(input, passwd);
+	strcat(input, passwd);
+	retv = pipe_execute(res, reslen, "/usr/bin/ssh", cmdline, input);
+
+exit_10:
 	free(cmdline);
 	return retv;
 }
@@ -352,6 +374,8 @@ int dbproc(const struct lease_info *inf)
 		retv = -8;
 		goto exit_20;
 	}
+	retv = scp_execute(buf, 1024, inf->ip, "../utils/dmi_read/smird");
+	printf("%s\n", buf);
 
 exit_20:
 	maria_exit(db);
