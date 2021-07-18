@@ -156,7 +156,7 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 	char *cmdbuf;
 	char *passwd, *input;
 	static const char *fmt = "sshpass -p %s ssh -l %s %s sudo -S " \
-			  "lios_lock_probe.py --hostname %s --password '%s' " \
+			  "lios_lock_probe.py --hostname %s --password %s " \
 			  "--username %s";
 
 	ssh_remove_stale_ip(oinf->ip);
@@ -244,7 +244,6 @@ int dbproc(const struct lease_info *inf)
 		retv = -1;
 		goto exit_10;
 	}
-	printf("DB Connected.\n");
 	retv = maria_query(db, 1, "select count(*) from barbarian where " \
 			"mac = '%s'", inf->mac);
 	if (retv) {
