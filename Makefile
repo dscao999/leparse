@@ -11,7 +11,7 @@ fmon: lease_mon.o file_monitor.o lease_parse.o
 
 lecho: CFLAGS += -pthread
 lecho: LDFLAGS += -pthread
-lecho: echo_lease.o dbproc.o dbconnect.o
+lecho: echo_lease.o dbproc.o dbconnect.o pipe_execution.o
 	$(LINK.o) $^ $(LIBS) -o $@
 
 dirnot:	inotify_dir.o
