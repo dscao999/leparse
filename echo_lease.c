@@ -137,7 +137,7 @@ void * check_mandb(void *dat)
 	nwrk = me->nwork;
 	retv = dbproc(inf);
 	if (retv)
-		elog("Somethin wrong in DB processing.\n");
+		elog("Somethin wrong in lease processing.\n");
 	free(inf);
 	free(me);
 	__sync_sub_and_fetch(nwrk, 1);

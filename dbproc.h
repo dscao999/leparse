@@ -9,9 +9,8 @@ struct lease_info {
 };
 
 struct os_info {
-	char uuid[36];
+	char uuid[40];
 	char serial[24];
-	char product[24];
 	char hostname[16];
 	char user[12];
 	char passwd[24];

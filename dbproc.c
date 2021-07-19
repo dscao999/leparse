@@ -15,6 +15,26 @@
 #include "dbproc.h"
 #include "dbconnect.h"
 
+static inline void fill_osinfo(char *buf, struct os_info *oinf)
+{
+	char *curp;
+	int count = 0;
+
+	curp = strtok(buf, ":\n");
+	while (curp && count < 2) {
+		if (strcmp(curp, "UUID") == 0) {
+			curp = strtok(NULL, ":\n");
+			strcpy(oinf->uuid, curp+1);
+			count += 1;
+		} else if (strcmp(curp, "Serial Number") == 0) {
+			curp = strtok(NULL, ":\n");
+			strcpy(oinf->serial, curp+1);
+			count += 1;
+		}
+		curp = strtok(NULL, ":\n");
+	}
+}
+
 static int pipe_execute(char *res, int reslen, const char *cmdpath,
 		const char *cmdline, const char *input)
 {
@@ -26,19 +46,19 @@ static int pipe_execute(char *res, int reslen, const char *cmdpath,
 
 	cmdbuf = malloc(strlen(cmdline)+1);
 	if (!cmdbuf) {
-		fprintf(stderr, "Out of Memory.\n");
+		elog("Out of Memory.\n");
 		return -100;
 	}
 	strcpy(cmdbuf, cmdline);
 	retv = pipe(pfdin);
 	if (retv == -1) {
-		fprintf(stderr, "pipe failed: %s\n", strerror(errno));
+		elog("pipe failed: %s\n", strerror(errno));
 		retv = -errno;
 		goto exit_10;
 	}
 	sysret = pipe(pfdout);
 	if (sysret == -1) {
-		fprintf(stderr, "pipe out failed: %s\n", strerror(errno));
+		elog("pipe out failed: %s\n", strerror(errno));
 		retv = -errno;
 		goto exit_20;
 	}
@@ -89,7 +109,7 @@ static int pipe_execute(char *res, int reslen, const char *cmdpath,
 	numb = 0;
 	sysret = poll(&pfd, 1, 100);
 	if (sysret == 1 && (pfd.revents & POLLIN) != 0)
-		numb = read(fdin, res, reslen);
+		numb = read(fdin, res, reslen - 1);
 	*(res+numb) = 0;
 	if (retv != 0)
 		fprintf(stderr, "execution failed, command: %s\nresponse: %s\n",
@@ -187,26 +207,111 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 static int update_citizen(struct maria *db, const struct lease_info *inf,
 		int mac2, const char *uuid)
 {
-	int retv = 0;
-	char *mesg;
+	int retv = 0, nfields, updated, tries;
+	char *mesg, *cmdbuf;
+	struct os_info oinf;
+	MYSQL_ROW row;
+	unsigned long tm;
 
-	mesg = malloc(1024);
-	if (!uuid) {
-		retv = scp_execute(mesg, 1024, inf->ip, "../utils/dmi_read/smird");
+	retv = 0;
+	updated = 0;
+	if (mac2) {
+		retv = maria_query(db, 0, "update citizen set last = %lu, " \
+				"ip2 = '%s' where mac2 = '%s'",
+				(unsigned long)inf->tm, inf->ip, inf->mac);
+		updated = 1;
+	} else if (uuid) {
+		retv = maria_query(db, 0, "update citizen set last = %lu, " \
+				"ip = '%s' where mac = '%s'",
+				(unsigned long)inf->tm, inf->ip, inf->mac);
+		updated = 1;
+	}
+	if (updated) {
+		if (retv)
+			elog("Cannot update citizen: %s, ip: %s.\n", inf->mac,
+					inf->ip);
 		return retv;
 	}
-	if (!mac2) {
-		retv = maria_query(db, 0, "update citizen set last = '%lu', " \
-				" ip = '%s' where mac = '%s'",
-				inf->tm, inf->ip, inf->mac);
-	} else {
-		retv = maria_query(db, 0, "update citizen set last = '%lu', " \
-				"ip2 = '%s' where mac2 = '%s'",
-				inf->tm, inf->ip, inf->mac);
+
+	retv = maria_query(db, 1, "select tries from citizen where mac = '%s'",
+			inf->mac);
+	if (retv != 0) {
+		elog("DB query error for 'tries': %s\n", inf->mac);
+		return retv;
 	}
+	row = mysql_fetch_row(db->res);
+	if (!row) {
+		elog("Internal logic error. search 'tries' failed for %s\n",
+				inf->mac);
+		return retv;
+	}
+	tries = atoi(row[0]);
+	maria_free_result(db);
+	tries += 1;
+	if (tries > 5) {
+		retv = maria_query(db, 0, "start transaction");
+		if (retv)
+			return retv;
+		retv = maria_query(db, 0, "insert into barbarian (mac) values" \
+				"('%s')", inf->mac);
+		if (retv)
+			return retv;
+		retv = maria_query(db, 0, "delete from citizen where mac = " \
+				"'%s'", inf->mac);
+		if (retv)
+			return retv;
+		retv = maria_query(db, 0, "commit release");
+		return retv;
+	}
+
+	mesg = malloc(1024);
+	memset(&oinf, 0, sizeof(oinf));
+	cmdbuf = mesg;
+	sprintf(cmdbuf, "ssh -o BatchMode=yes -l root %s ls", inf->ip);
+	retv = pipe_execute(mesg, 1024, "/usr/bin/ssh", cmdbuf, NULL);
+	if (retv != 0) {
+		retv = maria_query(db, 0, "update citizen set tries = %d where " \
+				"mac = '%s'", tries, inf->mac);
+		if (retv)
+			elog("Cannot set failed tries for '%s'\n", inf->mac);
+		goto exit_10;
+	}
+
+	retv = scp_execute(mesg, 1024, inf->ip, "../utils/dmi_read/smird");
+	if (retv != 0) {
+		elog("Cannot get the UUID of %s\n", inf->ip);
+		goto exit_10;
+	}
+	fill_osinfo(mesg, &oinf);
+	retv = maria_query(db, 1, "select last from citizen where uuid = " \
+			"'%s'", oinf.uuid);
+	nfields = mysql_num_fields(db->res);
+        assert(nfields == 1);
+	row = mysql_fetch_row(db->res);
+	if (!row) {
+		elog("still no such uuid: %s\n", oinf.uuid);
+		retv = -3;
+		maria_free_result(db);
+		goto exit_10;
+	}
+	tm = atoll(row[0]);
+	if (tm < inf->tm)
+		tm = inf->tm;
+	maria_free_result(db);
+	retv = maria_query(db, 0, "update citizen set mac2 = '%s', " \
+			"ip2 = '%s', last = %lu where uuid = '%s'", 
+			inf->mac, inf->ip, tm, oinf.uuid);
+	if (retv) {
+		elog("Cannot update citizen where uuid = %s\n", oinf.uuid);
+		goto exit_10;
+	}
+	retv = maria_query(db, 0, "delete from citizen where mac = " \
+			"'%s'", inf->mac);
 	if (retv)
 		elog("Cannot update citizen.\n");
-			
+
+exit_10:
+	free(mesg);
 	return retv;
 }
 
@@ -348,7 +453,7 @@ int dbproc(const struct lease_info *inf)
 				*curp == '&' || *curp == '}' || *curp == '{' ||
 				*curp == '#' || *curp == '$' || *curp == ';' ||
 				*curp == '[' || *curp == ']' || *curp == ',' ||
-				*curp == '\\');
+				*curp == '\\'|| *curp == '`');
 
 	};
 	*curp = 0;
@@ -356,9 +461,16 @@ int dbproc(const struct lease_info *inf)
 	printf("new hostname: %s, new password: '%s'\n", oinf->hostname,
 			oinf->passwd_new);
 	retv = ssh_probe(buf, 1024, oinf);
+	printf("%s\n", buf);
 	if (retv != 0) {
-		fprintf(stderr, "ssh_probe failed\n");
+		elog("ssh_probe %s failed\n", oinf->ip);
 		retv = -6;
+		goto exit_20;
+	}
+	retv = maria_query(db, 0, "start transaction");
+	if (retv != 0) {
+		elog("Cannot start a db transaction.\n");
+		retv = -retv;
 		goto exit_20;
 	}
 	retv = maria_query(db, 0, "update citizen set hostname = '%s', " \
@@ -370,12 +482,25 @@ int dbproc(const struct lease_info *inf)
 	}
 	retv = ssh_copyid(buf, 1024, oinf);
 	if (retv != 0) {
-		fprintf(stderr, "ssh_copyid failed\n");
+		elog("ssh_copyid failed\n");
 		retv = -8;
 		goto exit_20;
 	}
 	retv = scp_execute(buf, 1024, inf->ip, "../utils/dmi_read/smird");
 	printf("%s\n", buf);
+	if (retv != 0) {
+		retv = -8;
+		goto exit_20;
+	}
+	fill_osinfo(buf, oinf);
+	retv = maria_query(db, 0, "update citizen set uuid = '%s', serial = " \
+			"'%s' where mac = '%s'", oinf->uuid, oinf->serial,
+			inf->mac);
+	if (retv != 0) {
+		retv = -9;
+		goto exit_20;
+	}
+	retv = maria_query(db, 0, "commit release");
 
 exit_20:
 	maria_exit(db);
