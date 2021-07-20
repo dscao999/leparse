@@ -213,7 +213,7 @@ int main(int argc, char *argv[])
 {
 	struct sigaction mact;
 	struct addrinfo hint, *svrinfo, *adr;
-	int retv, sock, eno, buflen, fin, c, leave;
+	int retv, sock, eno, buflen, fin, c, leave, verbose;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
@@ -228,10 +228,11 @@ int main(int argc, char *argv[])
 	pthread_t echo_thread;
 	static struct lease_info fake_inf;
 
+	verbose = 0;
 	opterr = 0;
 	fin = 0;
 	do {
-		c = getopt(argc, argv, ":p:");
+		c = getopt(argc, argv, ":p:v");
 		switch (c) {
 		case -1:
 			fin = 1;
@@ -245,6 +246,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'p':
 			port = optarg;
+			break;
+		case 'v':
+			verbose = 1;
 			break;
 		default:
 			assert(0);
@@ -310,7 +314,8 @@ int main(int argc, char *argv[])
 		if (nread <= 0)
 			continue;
 		buf[nread] = 0;
-		printf("%s\n", buf);
+		if (verbose)
+			printf("%s\n", buf);
 
 		tok = strtok(buf, " ;{}");
 		leave = strcmp(buf, "leave") == 0;

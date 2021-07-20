@@ -82,18 +82,21 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 
 	retv = 0;
 	updated = 0;
+	tm = inf->tm;
+	if (inf->leave)
+		tm = 0;
 	if (mac2) {
 		retv = maria_query(db, 0, "update citizen set last = %lu, " \
 				"ip2 = '%s' where mac2 = '%s'",
-				(unsigned long)inf->tm, inf->ip, inf->mac);
+				(unsigned long)tm, inf->ip, inf->mac);
 		updated = 1;
 	} else if (uuid) {
 		retv = maria_query(db, 0, "update citizen set last = %lu, " \
 				"ip = '%s' where mac = '%s'",
-				(unsigned long)inf->tm, inf->ip, inf->mac);
+				(unsigned long)tm, inf->ip, inf->mac);
 		updated = 1;
 	}
-	if (updated) {
+	if (updated || inf->leave) {
 		if (retv)
 			elog("Cannot update citizen: %s, ip: %s.\n", inf->mac,
 					inf->ip);
@@ -162,9 +165,9 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		goto exit_10;
 	}
 	tm = atoll(row[0]);
+	maria_free_result(db);
 	if (tm < inf->tm)
 		tm = inf->tm;
-	maria_free_result(db);
 	retv = maria_query(db, 0, "update citizen set mac2 = '%s', " \
 			"ip2 = '%s', last = %lu where uuid = '%s'", 
 			inf->mac, inf->ip, tm, oinf.uuid);
@@ -280,6 +283,8 @@ int dbproc(const struct lease_info *inf)
 		goto exit_20;
 	}
 	maria_free_result(db);
+	if (inf->leave)
+		goto exit_20;
 	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, last) "\
 			"values ('%s', '%s', %lu, %lu)", inf->mac, inf->ip,
 			inf->tm, inf->tm);

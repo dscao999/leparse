@@ -165,19 +165,26 @@ struct idinfo * getinfo(int sockd)
 	return inf1st;
 }
 
-static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf)
+static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
+		int leave)
 {
 	struct timespec itm;
 	unsigned long rndsec;
 	const struct idinfo *curinf;
 	int len, sysret;
+	static const char *const lease = "lease";
+	static const char *const shutdown = "leave";
+	const char *verb;
 
+	verb = lease;
+	if (leave)
+		verb = shutdown;
 	getrandom(&rndsec, sizeof(rndsec), 0);
 	itm.tv_sec = 0;
 	itm.tv_nsec = rndsec % 1000000000ul;
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
-		len = sprintf(buf, "lease %s { start %lu; " \
-				"hardware ethernet %s; }", curinf->ip,
+		len = sprintf(buf, "%s %s { start %lu; " \
+				"hardware ethernet %s; }", verb, curinf->ip,
 				(unsigned long)curinf->tmstp, curinf->mac);
 		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
 				serv->addr_len);
@@ -186,8 +193,8 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf)
 	}
 	nanosleep(&itm, NULL);
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
-		len = sprintf(buf, "lease %s { start %lu; " \
-				"hardware ethernet %s; }", curinf->ip,
+		len = sprintf(buf, "%s %s { start %lu; " \
+				"hardware ethernet %s; }", verb, curinf->ip,
 				(unsigned long)curinf->tmstp, curinf->mac);
 		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
 				serv->addr_len);
@@ -198,7 +205,7 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf)
 
 int main(int argc, char *argv[])
 {
-	int fin, c, retv;
+	int fin, c, retv, leave;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct sigaction mact;
@@ -209,12 +216,13 @@ int main(int argc, char *argv[])
 	struct idinfo *inf, *curinf, *nxt;
 	char *buf;
 
+	leave = 0;
 	port = NULL;
 	lidm = NULL;
 	opterr = 0;
 	fin = 0;
 	do {
-		c = getopt(argc, argv, ":s:p:");
+		c = getopt(argc, argv, ":s:p:d");
 		switch(c) {
 		case -1:
 			fin = 1;
@@ -231,6 +239,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'p':
 			port = optarg;
+			break;
+		case 'd':
+			leave = 1;
 			break;
 		default:
 			assert(0);
@@ -285,7 +296,7 @@ int main(int argc, char *argv[])
 		goto exit_10;
 	}
 
-	ping_lidm(&serv, inf, buf);
+	ping_lidm(&serv, inf, buf, leave);
 
 	free(buf);
 	for (curinf = inf; curinf; curinf = nxt) {
