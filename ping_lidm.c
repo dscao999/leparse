@@ -209,6 +209,7 @@ int main(int argc, char *argv[])
 	struct idinfo *inf, *curinf, *nxt;
 	char *buf;
 
+	port = NULL;
 	lidm = NULL;
 	opterr = 0;
 	fin = 0;
@@ -257,6 +258,7 @@ int main(int argc, char *argv[])
 	retv = getaddrinfo(lidm, port, &hint, &serv_adr);
 	if (retv != 0) {
 		fprintf(stderr, "getaddrinfo failed: %s\n", gai_strerror(retv));
+		fprintf(stderr, "lidm: %s, port: %s\n", lidm, port);
 		retv = 2;
 		return retv;
 	}
