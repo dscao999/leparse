@@ -4,7 +4,7 @@ LIBS = -lmiscs -lmariadb
 
 .PHONY: all clean
 
-all: fmon lecho dirnot plidm
+all: fmon lecho dirnot plidm rmtexe
 
 fmon: lease_mon.o file_monitor.o lease_parse.o
 	$(LINK.o) $^ -o $@
@@ -14,19 +14,22 @@ lecho: LDFLAGS += -pthread
 lecho: echo_lease.o dbproc.o dbconnect.o pipe_execution.o
 	$(LINK.o) $^ $(LIBS) -o $@
 
+rmtexe: rmtexe.o pipe_execution.o
+	$(LINK.o) $^ -lmiscs -o $@
+
 dirnot:	inotify_dir.o
 	$(LINK.o) $^ -o $@
 
 plidm: ping_lidm.o
 	$(LINK.o) $^ -o $@
 
-release: lecho
+release: plidm
 
 release: CFLAGS += -O2
 release: LDFLAGS += -O1
 
 clean:
 	rm -f *.o *.d
-	rm -f fmon lecho dirnot
+	rm -f fmon lecho dirnot rmtexe
 
 include $(HOME)/devel/lib/header-dep.mak

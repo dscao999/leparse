@@ -204,11 +204,12 @@ int main(int argc, char *argv[])
 	struct sigaction mact;
 	struct leserv serv;
 	struct addrinfo hint, *serv_adr;
-	static const char *lidm = "127.0.0.1";
-	static const char *port = "7800";
+	static const char * const port_default = "7800";
+	const char *lidm, *port;
 	struct idinfo *inf, *curinf, *nxt;
 	char *buf;
 
+	lidm = NULL;
 	opterr = 0;
 	fin = 0;
 	do {
@@ -234,6 +235,12 @@ int main(int argc, char *argv[])
 			assert(0);
 		}
 	} while (fin == 0);
+	if (!lidm) {
+		fprintf(stderr, "No LIDM server specified.\n");
+		return 1;
+	}
+	if (!port)
+		port = port_default;
 
 	memset(&mact, 0, sizeof(struct sigaction));
 	mact.sa_handler = sig_handler;
