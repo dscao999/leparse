@@ -205,7 +205,7 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 
 int main(int argc, char *argv[])
 {
-	int fin, c, retv, leave;
+	int fin, c, retv, leave, verbose;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct sigaction mact;
@@ -217,12 +217,13 @@ int main(int argc, char *argv[])
 	char *buf;
 
 	leave = 0;
+	verbose = 0;
 	port = NULL;
 	lidm = NULL;
 	opterr = 0;
 	fin = 0;
 	do {
-		c = getopt(argc, argv, ":s:p:d");
+		c = getopt(argc, argv, ":s:p:dv");
 		switch(c) {
 		case -1:
 			fin = 1;
@@ -243,6 +244,9 @@ int main(int argc, char *argv[])
 		case 'd':
 			leave = 1;
 			break;
+		case 'v':
+			verbose = 1;
+			break;
 		default:
 			assert(0);
 		}
@@ -253,6 +257,12 @@ int main(int argc, char *argv[])
 	}
 	if (!port)
 		port = port_default;
+	if (verbose) {
+		int i;
+		for (i = 0; i < argc - 1; i++)
+			printf("%s ", argv[i]);
+		printf("%s\n", argv[i]);
+	}
 
 	memset(&mact, 0, sizeof(struct sigaction));
 	mact.sa_handler = sig_handler;
