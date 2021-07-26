@@ -30,6 +30,18 @@ struct leserv {
 	struct sockaddr addr;
 };
 
+static void sockaddr_parse(const struct sockaddr *addr)
+{
+	const struct sockaddr_in *sockin;
+	char ip[16];
+
+	sockin = (const struct sockaddr_in *)addr;
+	printf("sin family: %hd, port: %hd\n", ntohs(sockin->sin_family),
+			ntohs(sockin->sin_port));
+	printf("IP: %s\n", inet_ntop(AF_INET, &sockin->sin_addr, ip, sizeof(ip)));
+	fflush(stdout);
+}
+
 static const char *netdir = "/sys/class/net";
 
 struct idinfo {
@@ -40,12 +52,12 @@ struct idinfo {
 	struct idinfo *nxt;
 };
 
-struct idinfo * getinfo(int sockd)
+struct idinfo * getinfo(void)
 {
 	struct idinfo *inf, *inf1st, *inf_prev;
 	DIR *dir;
 	struct dirent *dent;
-	int numb;
+	int numb, sockd;
 	char *macfile, *lnknam, *buf;
 	FILE *fin;
 	char *ln, *mac, *iface, *ip;
@@ -66,6 +78,11 @@ struct idinfo * getinfo(int sockd)
 	mac = iface + 128;
 	ip = mac + 128;
 
+	sockd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockd == -1) {
+		fprintf(stderr, "Cannot create socket: %s\n", strerror(errno));
+		return NULL;
+	}
 	inf1st = NULL;
 	inf_prev = NULL;
 	dir = opendir(netdir);
@@ -161,6 +178,7 @@ struct idinfo * getinfo(int sockd)
 		inf_prev = inf;
 	} while (1);
 	closedir(dir);
+	close(sockd);
 	free(mreq);
 	return inf1st;
 }
@@ -188,8 +206,11 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 				(unsigned long)curinf->tmstp, curinf->mac);
 		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
 				serv->addr_len);
-		if (sysret == -1)
+		if (sysret == -1) {
+			sockaddr_parse(&serv->addr);
 			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+			fprintf(stderr, "%d, len: %d, '%s'\n", serv->sock, len, buf);
+		}
 	}
 	nanosleep(&itm, NULL);
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
@@ -198,8 +219,11 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 				(unsigned long)curinf->tmstp, curinf->mac);
 		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
 				serv->addr_len);
-		if (sysret == -1)
+		if (sysret == -1) {
+			sockaddr_parse(&serv->addr);
 			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+			fprintf(stderr, "%d, len: %d, '%s'\n", serv->sock, len, buf);
+		}
 	}
 }
 
@@ -212,6 +236,7 @@ int main(int argc, char *argv[])
 	struct leserv serv;
 	struct addrinfo hint, *serv_adr;
 	static const char * const port_default = "7800";
+	static const char * const lidm_default = "localhost";
 	const char *lidm, *port;
 	struct idinfo *inf, *curinf, *nxt;
 	char *buf;
@@ -236,10 +261,10 @@ int main(int argc, char *argv[])
 					(char)optopt);
 			break;
 		case 's':
-			lidm = optarg;
+			lidm = strtok(optarg, " ");
 			break;
 		case 'p':
-			port = optarg;
+			port = strtok(optarg, " ");
 			break;
 		case 'd':
 			leave = 1;
@@ -251,10 +276,8 @@ int main(int argc, char *argv[])
 			assert(0);
 		}
 	} while (fin == 0);
-	if (!lidm) {
-		fprintf(stderr, "No LIDM server specified.\n");
-		return 1;
-	}
+	if (!lidm)
+		lidm = lidm_default;
 	if (!port)
 		port = port_default;
 	if (verbose) {
@@ -279,7 +302,8 @@ int main(int argc, char *argv[])
 	retv = getaddrinfo(lidm, port, &hint, &serv_adr);
 	if (retv != 0) {
 		fprintf(stderr, "getaddrinfo failed: %s\n", gai_strerror(retv));
-		fprintf(stderr, "lidm: %s, port: %s\n", lidm, port);
+		fprintf(stderr, "lidm: '%s', len: %lu, port: '%s', len: %lu\n",
+				lidm, strlen(lidm), port, strlen(port));
 		retv = 2;
 		return retv;
 	}
@@ -294,7 +318,7 @@ int main(int argc, char *argv[])
 		return retv;
 	}
 
-	inf = getinfo(serv.sock);
+	inf = getinfo();
 	if (!inf) {
 		retv = 3;
 		goto exit_10;
