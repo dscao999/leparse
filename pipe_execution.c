@@ -10,20 +10,24 @@
 #include "miscs.h"
 #include "pipe_execution.h"
 
-int pipe_execute(char *res, int reslen, const char *cmdpath,
-		const char *cmdline, const char *input)
+int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 {
 	int sysret, retv, pfdin[2], pfdout[2], idx;
-	int fdout, fdin;
-	char *curchr, *args[20], *cmdbuf;
+	int fdout, fdin, numargs, cmdlen;
+	char *curchr, **args, *cmdbuf, *cmd;
+	char *lsl;
 	pid_t subpid;
 	int numb;
 
-	cmdbuf = malloc(strlen(cmdline)+1);
+	cmdlen = (strlen(cmdline) / sizeof(char *) + 1) * sizeof(char *);
+	numargs = 20;
+	cmdbuf = malloc(cmdlen+sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
 		elog("Out of Memory.\n");
 		return -100;
 	}
+	args = (char **)(cmdbuf + cmdlen);
+	cmd = (char *)(args + numargs);
 	strcpy(cmdbuf, cmdline);
 	retv = pipe(pfdin);
 	if (retv == -1) {
@@ -37,13 +41,17 @@ int pipe_execute(char *res, int reslen, const char *cmdpath,
 		retv = -errno;
 		goto exit_20;
 	}
-	idx = 0;
 	curchr = strtok(cmdbuf, " ");
-	while (curchr && idx < sizeof(args)/sizeof(char *) - 1) {
+	strcpy(cmd, curchr);
+	lsl = strrchr(curchr, '/');
+	idx = 0;
+	while (curchr && idx < numargs - 1) {
 		args[idx++] = curchr;
 		curchr = strtok(NULL, " ");
 	}
 	args[idx] = NULL;
+	if (lsl)
+		args[0] = lsl + 1;
 	subpid = fork();
 	if (subpid == -1) {
 		fprintf(stderr, "fork failed: %s\n", strerror(errno));
@@ -63,7 +71,10 @@ int pipe_execute(char *res, int reslen, const char *cmdpath,
 		stderr = fdopen(dup(fdout), "w");
 		close(fdin);
 		close(fdout);
-		sysret = execv(cmdpath, args);
+		if (lsl)
+			sysret = execv(cmd, args);
+		else
+			sysret = execvp(cmd, args);
 		if (sysret == -1)
 			fprintf(stderr, "execv failed: %s\n", strerror(errno));
 		exit(1);
@@ -103,52 +114,77 @@ exit_10:
 	return retv;
 }
 
-int scp_execute(char *res, int reslen, const char *ip, const char *fname,
+int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		int rm)
 {
 	struct stat mst;
-	char *cmdbuf, bname[128];
-	const char *lsl;
-	int sysret, retv = -1;
+	char *cmdbuf, **args, *curchr, *cmdfile, *cmdexe; 
+	char *lsl;
+	int sysret, retv = -1, cmdlen, numargs, idx;
+	int pntpos, pntlen;
 	static const char *cpfmt = "scp -o BatchMode=yes %s root@%s:";
 	static const char *exfmt = "ssh -o BatchMode=yes -l root %s ./%s";
+	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s %s";
 	static const char *rmfmt = "ssh -o BatchMode=yes -l root %s rm ./%s";
 
-	sysret = stat(fname, &mst);
-	if (sysret == -1) {
-		fprintf(stderr, "No such file %s: %s\n", fname,
-				strerror(errno));
-		return -errno;
-	}
-	cmdbuf = malloc(512);
+	numargs = 20;
+	cmdlen = (strlen(cmdline) / sizeof(char *) + 1) * sizeof(char *);
+	cmdbuf = malloc(2*cmdlen + sizeof(char *)*numargs + 64);
 	if (!cmdbuf) {
 		fprintf(stderr, "Out of Memory.\n");
 		return -100;
 	}
-	sprintf(cmdbuf, cpfmt, fname, ip);
-	retv = pipe_execute(res, reslen, "/usr/bin/scp", cmdbuf, NULL);
+	args = (char **)(cmdbuf + cmdlen);
+	cmdexe = (char *)(args + numargs);
+	strcpy(cmdbuf, cmdline);
+	curchr = strtok(cmdbuf, " ");
+	idx = 0;
+	while (curchr) {
+		args[idx++] = curchr;
+		curchr = strtok(NULL, " ");
+	}
+	args[idx] = curchr;
+
+	pntpos = 0;
+	cmdfile = args[0];
+	lsl = strrchr(cmdfile, '/');
+	if (lsl) {
+		sysret = stat(cmdfile, &mst);
+		if (sysret == -1) {
+			fprintf(stderr, "No such file %s: %s\n", cmdfile,
+					strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
+		sprintf(cmdexe, cpfmt, cmdfile, ip);
+		retv = pipe_execute(res, reslen, cmdexe, NULL);
+		if (retv != 0) {
+			elog("%s failed: %s\n", cmdexe, res);
+			goto exit_10;
+		}
+		args[0] = lsl + 1;
+		pntlen = sprintf(cmdexe, exfmt, ip, args[0]);
+		pntpos += pntlen;
+	} else {
+		pntlen = sprintf(cmdexe, e0fmt, ip, args[0]);
+		pntpos += pntlen;
+	}
+	for (idx = 1; args[idx]; idx++) {
+		pntlen = sprintf(cmdexe+pntpos, " %s", args[idx]);
+		pntpos += pntlen;
+	}
+	retv = pipe_execute(res, reslen, cmdexe, NULL);
 	if (retv != 0) {
-		elog("%s failed: %s\n", cmdbuf, res);
+		elog("%s failed: %s\n", cmdexe, res);
 		goto exit_10;
 	}
-	lsl = strrchr(fname, '/');
-	if (lsl)
-		strcpy(bname, lsl+1);
-	else
-		strcpy(bname, fname);
-	sprintf(cmdbuf, exfmt, ip, bname);
-	retv = pipe_execute(res, reslen, "/usr/bin/ssh", cmdbuf, NULL);
-	if (retv != 0) {
-		elog("%s failed: %s\n", cmdbuf, res);
-		goto exit_10;
-	}
-	if (!rm)
+	if (!rm || !lsl)
 		goto exit_10;
 
-	sprintf(cmdbuf, rmfmt, ip, bname);
-	retv = pipe_execute(res, reslen, "/usr/bin/ssh", cmdbuf, NULL);
+	sprintf(cmdexe, rmfmt, ip, args[0]);
+	retv = pipe_execute(cmdbuf, cmdlen, cmdexe, NULL);
 	if (retv)
-		elog("%s failed: %s\n", cmdbuf, res);
+		elog("%s failed: %s\n", cmdexe, cmdbuf);
 
 exit_10:
 	free(cmdbuf);

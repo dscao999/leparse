@@ -38,10 +38,10 @@ static inline void ssh_remove_stale_ip(const char *ip)
 	char *cmd, *res;
 	static const char *fmt = "ssh-keygen -R %s";
 
-	cmd = malloc(1024);
-	res = cmd + 512;
+	cmd = malloc(2048);
+	res = cmd + 1024;
 	sprintf(cmd, fmt, ip);
-	pipe_execute(res, 512, "/usr/bin/ssh-keygen", cmd, NULL);
+	pipe_execute(res, 1024, cmd, NULL);
 	free(cmd);
 }
 
@@ -56,17 +56,17 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 
 	ssh_remove_stale_ip(oinf->ip);
 	*res = 0;
-	cmdbuf = malloc(512+64);
+	cmdbuf = malloc(1024+64);
 	sprintf(cmdbuf, fmt, oinf->passwd, oinf->user, oinf->ip,
 			oinf->hostname, oinf->passwd_new, oinf->user);
-	passwd = cmdbuf + 512;
+	passwd = cmdbuf + 1024;
 	input = passwd + 16;
 	strcpy(passwd, oinf->passwd);
 	strcat(passwd, "\n");
 	strcpy(input, passwd);
 	strcat(input, passwd);
 	strcat(input, passwd);
-	retv = pipe_execute(res, reslen, "/usr/bin/sshpass", cmdbuf, input);
+	retv = pipe_execute(res, reslen, cmdbuf, input);
 	free(cmdbuf);
 	return retv;
 }
@@ -138,7 +138,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	memset(&oinf, 0, sizeof(oinf));
 	cmdbuf = mesg;
 	sprintf(cmdbuf, "ssh -o BatchMode=yes -l root %s ls", inf->ip);
-	retv = pipe_execute(mesg, 1024, "/usr/bin/ssh", cmdbuf, NULL);
+	retv = pipe_execute(mesg, 1024, cmdbuf, NULL);
 	if (retv != 0) {
 		retv = maria_query(db, 0, "update citizen set tries = %d where " \
 				"mac = '%s'", tries, inf->mac);
@@ -147,7 +147,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		goto exit_10;
 	}
 
-	retv = scp_execute(mesg, 1024, inf->ip, "../utils/dmi_read/smird", 0);
+	retv = ssh_execute(mesg, 1024, inf->ip, "../utils/dmi_read/smird", 0);
 	if (retv != 0) {
 		elog("Cannot get the UUID of %s\n", inf->ip);
 		goto exit_10;
@@ -192,11 +192,11 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	static const char *cpyfmt = "sshpass -p %s ssh-copy-id %s@%s";
 	static const char *tstfmt = "ssh -l %s %s sudo -S cp -r .ssh /root/";
 
-	cmdline = malloc(512);
-	passwd = cmdline + 256;
+	cmdline = malloc(1024);
+	passwd = cmdline + 512;
 	input = passwd + 128;
 	sprintf(cmdline, cpyfmt, oinf->passwd_new, oinf->user, oinf->ip);
-	retv = pipe_execute(res, reslen, "/usr/bin/sshpass", cmdline, NULL);
+	retv = pipe_execute(res, reslen, cmdline, NULL);
 	if (retv != 0)
 		goto exit_10;
 	sprintf(cmdline, tstfmt, oinf->user, oinf->ip);
@@ -205,7 +205,7 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	strcpy(input, passwd);
 	strcat(input, passwd);
 	strcat(input, passwd);
-	retv = pipe_execute(res, reslen, "/usr/bin/ssh", cmdline, input);
+	retv = pipe_execute(res, reslen, cmdline, input);
 
 exit_10:
 	free(cmdline);
@@ -358,7 +358,7 @@ int dbproc(const struct lease_info *inf)
 		retv = -8;
 		goto exit_20;
 	}
-	retv = scp_execute(buf, 1024, inf->ip, "../utils/dmi_read/smird", 0);
+	retv = ssh_execute(buf, 1024, inf->ip, "../utils/dmi_read/smird", 0);
 	printf("%s\n", buf);
 	if (retv != 0) {
 		retv = -8;

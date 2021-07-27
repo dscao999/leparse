@@ -9,7 +9,8 @@ int main(int argc, char *argv[])
 {
 	int c, fin, rm, reslen, retv;
 	const char *peer, *exfile;
-	char *res;
+	char *res, *cmdline;
+	int i, pntpos, pntlen;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 
@@ -52,8 +53,14 @@ int main(int argc, char *argv[])
 	}
 	
 	reslen = 1024;
-	res = malloc(reslen);
-	retv = scp_execute(res, reslen, peer, exfile, rm);
+	res = malloc(reslen+1024);
+	cmdline = res + reslen;
+	pntpos = 0;
+	for (i = optind; i < argc; i++) {
+		pntlen = sprintf(cmdline+pntpos, "%s ", argv[i]);
+		pntpos += pntlen;
+	}
+	retv = ssh_execute(res, reslen, peer, cmdline, rm);
 	if (retv != 0)
 		elog("Remote execution failed.\n");
 	printf("%s\n", res);
