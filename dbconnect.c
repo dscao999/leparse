@@ -12,12 +12,12 @@ int maria_init(struct maria *db, const char *dbname)
 	struct passwd *pwd;
 
 	db->stmt = malloc(1024);
-	if (!db->stmt) {
+	if (unlikely(!db->stmt)) {
 		elog("Out of Memory.\n");
 		return -100;
 	}
 	db->dbh = mysql_init(NULL);
-	if (!db->dbh) {
+	if (unlikely(!db->dbh)) {
 		elog("maria: Cannot initialize connection handler.\n");
 		retv = -1;
 		goto exit_10;
@@ -25,7 +25,7 @@ int maria_init(struct maria *db, const char *dbname)
 	pwd = getpwuid(getuid());
 	db->dbh = mysql_real_connect(db->dbh, NULL, pwd->pw_name, NULL, dbname,
 			0, NULL, 0);
-	if (!db->dbh) {
+	if (unlikely(!db->dbh)) {
 		elog("maria: Cannot connect to database.\n");
 		retv = -2;
 		goto exit_20;
@@ -57,7 +57,7 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 	vsprintf(db->stmt, fmt, ap);
 	va_end(ap);
 	retv = mysql_query(db->dbh, db->stmt);
-	if (retv) {
+	if (unlikely(retv)) {
 		elog("DB Statement '%s' failed: %s\n", db->stmt,
 				mysql_error(db->dbh));
 		return retv;
@@ -66,7 +66,7 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 		return retv;
 
 	db->res = mysql_store_result(db->dbh);
-	if (!db->res) {
+	if (unlikely(!db->res)) {
 		elog("Cannto store the query '%s' result set: %s\n",
 				db->stmt, mysql_error(db->dbh));
 		retv = -5;

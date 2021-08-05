@@ -105,7 +105,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 
 	retv = maria_query(db, 1, "select tries from citizen where mac = '%s'",
 			inf->mac);
-	if (retv != 0) {
+	if (unlikely(retv != 0)) {
 		elog("DB query error for 'tries': %s\n", inf->mac);
 		return retv;
 	}
@@ -120,15 +120,15 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	tries += 1;
 	if (tries > 5) {
 		retv = maria_query(db, 0, "start transaction");
-		if (retv)
+		if (unlikely(retv))
 			return retv;
 		retv = maria_query(db, 0, "insert into barbarian (mac) values" \
 				"('%s')", inf->mac);
-		if (retv)
+		if (unlikely(retv))
 			return retv;
 		retv = maria_query(db, 0, "delete from citizen where mac = " \
 				"'%s'", inf->mac);
-		if (retv)
+		if (unlikely(retv))
 			return retv;
 		retv = maria_query(db, 0, "commit release");
 		return retv;
@@ -226,7 +226,7 @@ int dbproc(const struct lease_info *inf)
 	char *buf;
 
 	db = malloc(sizeof(struct maria)+sizeof(struct os_info)+1024);
-	if (!db) {
+	if (unlikely(!db)) {
 		elog("Out of Memory.\n");
 		retv = -1;
 		return retv;
@@ -236,14 +236,14 @@ int dbproc(const struct lease_info *inf)
 	buf = (char *)(oinf + 1);
 
 	retv = maria_init(db, "lidm");
-	if (retv != 0) {
+	if (unlikely(retv != 0)) {
 		elog("Cannot initialize db connection to %s\n", "lidm");
 		retv = -1;
 		goto exit_10;
 	}
 	retv = maria_query(db, 1, "select count(*) from barbarian where " \
 			"mac = '%s'", inf->mac);
-	if (retv) {
+	if (unlikely(retv)) {
 		retv = -3;
 		goto exit_20;
 	}
@@ -259,7 +259,7 @@ int dbproc(const struct lease_info *inf)
 
 	retv = maria_query(db, 1, "select mac, mac2, last, uuid from citizen " \
 		       	"where mac = '%s' or mac2 = '%s'", inf->mac, inf->mac);
-	if (retv) {
+	if (unlikely(retv)) {
 		retv = -6;
 		goto exit_20;
 	}
@@ -311,7 +311,7 @@ int dbproc(const struct lease_info *inf)
 	strcpy(oinf->user, row[3]);
 	maria_free_result(db);
 	rndh = fopen("/dev/urandom", "rb");
-	if (!rndh) {
+	if (unlikely(!rndh)) {
 		elog("Cannot open /dev/urandom: %s\n", strerror(errno));
 		retv = -8;
 		goto exit_20;
@@ -340,7 +340,7 @@ int dbproc(const struct lease_info *inf)
 		goto exit_20;
 	}
 	retv = maria_query(db, 0, "start transaction");
-	if (retv != 0) {
+	if (unlikely(retv != 0)) {
 		elog("Cannot start a db transaction.\n");
 		retv = -retv;
 		goto exit_20;

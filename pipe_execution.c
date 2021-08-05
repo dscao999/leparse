@@ -17,9 +17,15 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	char *curchr, **args, *cmdbuf, *cmd;
 	char *lsl;
 	pid_t subpid;
-	int numb;
+	int numb, len;
 
-	cmdlen = (strlen(cmdline) / sizeof(char *) + 1) * sizeof(char *);
+	retv = -1;
+	if (!cmdline)
+		return retv;
+	len = strlen(cmdline);
+	if (len < 1)
+		return retv;
+	cmdlen = ((len - 1) / sizeof(char *) + 1) * sizeof(char *);
 	numargs = 20;
 	cmdbuf = malloc(cmdlen+sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
@@ -53,7 +59,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	if (lsl)
 		args[0] = lsl + 1;
 	subpid = fork();
-	if (subpid == -1) {
+	if (unlikely(subpid == -1)) {
 		fprintf(stderr, "fork failed: %s\n", strerror(errno));
 		retv = -errno;
 		goto exit_30;
@@ -121,15 +127,20 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	char *cmdbuf, **args, *curchr, *cmdfile, *cmdexe; 
 	char *lsl;
 	int sysret, retv = -1, cmdlen, numargs, idx;
-	int pntpos, pntlen;
+	int pntpos, pntlen, len;
 	static const char *cpfmt = "scp -o BatchMode=yes %s root@%s:";
 	static const char *exfmt = "ssh -o BatchMode=yes -l root %s ./%s";
 	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s %s";
 	static const char *rmfmt = "ssh -o BatchMode=yes -l root %s rm ./%s";
 
+	if (!cmdline)
+		return retv;
+	len = strlen(cmdline);
+	if (len < 1)
+		return retv;
 	numargs = 20;
-	cmdlen = (strlen(cmdline) / sizeof(char *) + 1) * sizeof(char *);
-	cmdbuf = malloc(2*cmdlen + sizeof(char *)*numargs + 64);
+	cmdlen = ((len - 1) / sizeof(char *) + 1) * sizeof(char *);
+	cmdbuf = malloc(2*cmdlen + sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
 		fprintf(stderr, "Out of Memory.\n");
 		return -100;
