@@ -4,7 +4,7 @@
 struct lease_info {
 	char mac[24];
 	char ip [64];
-	time_t tm, stm;
+	time_t tm;
 	int leave;
 };
 

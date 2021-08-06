@@ -11,115 +11,25 @@
 #include <pthread.h>
 #include <time.h>
 #include "miscs.h"
+#include "list_head.h"
 #include "dbproc.h"
 
 struct thread_worker {
-	struct lease_info *inf;
-	volatile int *nwork;
+	struct lease_info inf;
+	pthread_t thid;
+	struct list_head lst;
+	int fin;
 };
 
-#define maxeles 1024
-#define maxmask 1023
-
-struct cirbuf {
-	volatile int head;
-	volatile int tail;
-	volatile int *global_exit;
-	pthread_cond_t cond;
-	pthread_mutex_t mutex;
-	struct lease_info *linfs[maxeles];
-};
-
-static int cirbuf_search(struct cirbuf *cbuf, struct lease_info *linf)
+static inline int worker_equal(const struct thread_worker *w1,
+		const struct thread_worker *w2)
 {
-	int idx, found = 0;
-
-	pthread_mutex_lock(&cbuf->mutex);
-	for (idx = cbuf->tail; idx != cbuf->head; idx = (idx + 1) & maxmask) {
-		if (linf->tm != cbuf->linfs[idx]->tm)
-			continue;
-		if (strcmp(linf->mac, cbuf->linfs[idx]->mac) == 0) {
-			found = 1;
-			break;
-		}
-	}
-	pthread_mutex_unlock(&cbuf->mutex);
-	return found;
-}
-
-static inline void cirbuf_init(struct cirbuf *cbuf, volatile int *global_exit)
-{
-	cbuf->head = 0;
-	cbuf->tail = 0;
-	cbuf->global_exit = global_exit;
-	pthread_cond_init(&cbuf->cond, NULL);
-	pthread_mutex_init(&cbuf->mutex, NULL);
-}
-
-static inline void cirbuf_exit(struct cirbuf *cbuf)
-{
-	pthread_cond_destroy(&cbuf->cond);
-	pthread_mutex_destroy(&cbuf->mutex);
-}
-
-static inline int cirbuf_head_next(const struct cirbuf *cbuf)
-{
-	return (cbuf->head + 1) & maxmask;
-}
-
-static inline int cirbuf_tail_next(const struct cirbuf *cbuf)
-{
-	return (cbuf->tail + 1) & maxmask;
-}
-
-static inline int cirbuf_empty(const struct cirbuf *cbuf)
-{
-	return (cbuf->head == cbuf->tail);
-}
-
-static inline int cirbuf_full(const struct cirbuf *cbuf)
-{
-	return (cirbuf_head_next(cbuf) == cbuf->tail);
-}
-
-static inline int cirbuf_insert(struct cirbuf *cbuf, struct lease_info *inf)
-{
-	int wake = 0;
-
-	if (cirbuf_full(cbuf))
-		return -1;
-	pthread_mutex_lock(&cbuf->mutex);
-	if (cirbuf_empty(cbuf))
-		wake = 1;
-	cbuf->linfs[cbuf->head] = inf;
-	cbuf->head = cirbuf_head_next(cbuf);
-	if (wake)
-		pthread_cond_signal(&cbuf->cond);
-	pthread_mutex_unlock(&cbuf->mutex);
-	return 0;
-}
-
-static inline struct lease_info * cirbuf_remove(struct cirbuf *cbuf)
-{
-	struct lease_info *inf;
-	time_t tm;
-
-	inf = NULL;
-	pthread_mutex_lock(&cbuf->mutex);
-	while (cirbuf_empty(cbuf))
-		pthread_cond_wait(&cbuf->cond, &cbuf->mutex);
-	assert(cirbuf_empty(cbuf) == 0);
-	tm = time(NULL);
-	inf = cbuf->linfs[cbuf->tail];
-	if (tm - inf->stm > 2)
-		cbuf->tail = cirbuf_tail_next(cbuf);
-	else
-		inf = NULL;
-	pthread_mutex_unlock(&cbuf->mutex);
-	return inf;
+	return (w1->inf.tm == w2->inf.tm) &&
+			(strcmp(w1->inf.mac, w2->inf.mac) == 0);
 }
 
 static volatile int global_exit = 0;
+
 
 void sig_handler(int sig)
 {
@@ -127,85 +37,21 @@ void sig_handler(int sig)
 		global_exit = 1;
 }
 
-void * check_mandb(void *dat)
+void * process_echo(void *dat)
 {
 	struct thread_worker *me = (struct thread_worker *)dat;
-	struct lease_info *inf = me->inf;
 	int retv;
-	volatile int *nwrk;
-
-	nwrk = me->nwork;
-	retv = dbproc(inf);
-	if (retv)
-		elog("Somethin wrong in lease processing.\n");
-	free(inf);
-	free(me);
-	__sync_sub_and_fetch(nwrk, 1);
-	return NULL;
-}
-
-void * echo_processing(void *dat)
-{
-	struct cirbuf *wbuf = (struct cirbuf *)dat;
-	struct lease_info *inf;
-	pthread_t ckthrd;
-	pthread_attr_t attr;
-	int sysret;
-	volatile int nworker;
-	struct thread_worker *thwork;
+	time_t tm;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 
-	nworker = 0;
-	sysret = pthread_attr_init(&attr);
-	if (sysret) {
-		elog("Cannot initialize thread attr: %s\n",
-				strerror(sysret));
-		global_exit = 1;
-		return NULL;
-	}
-	sysret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-	if (sysret) {
-		elog("Cannot set thread to detached: %s\n",
-				strerror(sysret));
-		global_exit = 1;
-		goto exit_10;
-	}
-	do {
-		inf = cirbuf_remove(wbuf);
-		if (!inf) {
-			nanosleep(&itv, NULL);
-			continue;
-		}
-		if (inf->mac[0] == 0)
-			continue;
-
-		thwork = malloc(sizeof(struct thread_worker));
-		if (!thwork) {
-			elog("Out of Memory.\n");
-			global_exit = 1;
-			free(inf);
-			goto exit_10;
-		}
-		thwork->inf = inf;
-		thwork->nwork = &nworker;
-		sysret = pthread_create(&ckthrd, &attr, check_mandb, thwork);
-		if (sysret) {
-			elog("Cannot create worker thread: %s\n",
-					strerror(sysret));
-			global_exit = 1;
-			free(inf);
-			free(thwork);
-			goto exit_10;
-		}
-		__sync_add_and_fetch(&nworker, 1);
-	} while (global_exit == 0);
-
-exit_10:
-	pthread_attr_destroy(&attr);
-	while (nworker) {
-		printf("nworker: %d\n", nworker);
+	retv = dbproc(&me->inf);
+	if (retv)
+		elog("Somethin wrong in lease processing.\n");
+	while (tm - me->inf.tm < 2) {
 		nanosleep(&itv, NULL);
+		tm = time(NULL);
 	}
+	me->fin = -1;
 	return NULL;
 }
 
@@ -214,19 +60,20 @@ int main(int argc, char *argv[])
 	struct sigaction mact;
 	struct addrinfo hint, *svrinfo, *adr;
 	int retv, sock, eno, buflen, fin, c, leave, verbose;
+	int numcpus = 6, sysret;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
 	char *buf, *tok, *ip, *start, *mac;
 	const char *port = "7800";
-	struct cirbuf *wbuf;
 	struct lease_info *linfo;
 	time_t tm;
+	int nworker = 0;
+	struct list_head threads;
+	struct thread_worker *worker, *wentry, *nxtw;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 	extern char *optarg;
 	extern int opterr, optopt;
-	pthread_t echo_thread;
-	static struct lease_info fake_inf;
 
 	verbose = 0;
 	opterr = 0;
@@ -288,22 +135,13 @@ int main(int argc, char *argv[])
 			sigaction(SIGTERM, &mact, NULL) == -1)
 		elog("Warning: cannot install signal handler: %s\n",
 				strerror(errno));
+	INIT_LIST_HEAD(&threads);
+	buflen = 1024;
+	buf = malloc(buflen);
 
-	buflen = 512;
-	buf = malloc(buflen+sizeof(struct cirbuf));
-	wbuf = (struct cirbuf *)(buf + buflen);
-	cirbuf_init(wbuf, &global_exit);
-
-	retv = pthread_create(&echo_thread, NULL, echo_processing, wbuf);
-	if (retv) {
-		elog("Cannot create echo processing thread: %s\n",
-				strerror(retv));
-		goto exit_20;
-	}
-	retv = 0;
 	while (global_exit == 0) {
 		peer_addr_len = sizeof(struct sockaddr_storage);
-		nread = recvfrom(sock, buf, buflen, 0,
+		nread = recvfrom(sock, buf, buflen - 1, 0,
 				(struct sockaddr *)&peer_addr, &peer_addr_len);
 		if (nread == -1 && errno != EINTR) {
 			elog("recvfrom failed: %s\n",
@@ -334,39 +172,69 @@ int main(int argc, char *argv[])
 		if (strcmp(tok, "ethernet") != 0)
 			continue;
 		mac = strtok(NULL, " ;{}");
-		linfo = malloc(sizeof(struct lease_info));
-		if (!linfo) {
+		worker = malloc(sizeof(struct thread_worker));
+		if (!worker) {
 			elog("Out of Memory.\n");
-			global_exit = 1;
 			break;
 		}
+		linfo = &worker->inf;
 		linfo->tm = tm;
 		linfo->leave = leave;
-		linfo->stm = time(NULL);
 		strcpy(linfo->mac, mac);
 		strcpy(linfo->ip, ip);
-		if (cirbuf_search(wbuf, linfo))
+		list_for_each_entry(wentry, &threads, lst) {
+			if (worker_equal(wentry, worker))
+				break;
+		}
+		if (&wentry->lst != &threads) {
+			free(worker);
 			continue;
-		while (cirbuf_insert(wbuf, linfo) == -1) {
-			elog("Stall for one second.\n");
+		}
+		while (nworker >= numcpus) {
 			nanosleep(&itv, NULL);
+			list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
+				if (wentry->fin == -1) {
+					pthread_join(wentry->thid, NULL);
+					list_del(&wentry->lst, &threads);
+					free(wentry);
+					nworker -= 1;
+				}
+			}
+		}
+		
+		worker->fin = 0;
+		sysret = pthread_create(&worker->thid, NULL, process_echo,
+				worker);
+		if (sysret) {
+			elog("Thread creation failed: %s\n", strerror(sysret));
+			free(worker);
+		} else
+			list_add(&worker->lst, &threads);
+		list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
+			if (wentry->fin == -1) {
+				pthread_join(wentry->thid, NULL);
+				list_del(&wentry->lst, &threads);
+				free(wentry);
+				nworker -= 1;
+			}
 		}
 	}
-	if (cirbuf_empty(wbuf)) {
-		linfo = &fake_inf;
-		linfo->stm = time(NULL) - 5;
-		linfo->mac[0] = 0;
-		cirbuf_insert(wbuf, linfo);
+	printf("Waiting for all workers to finish...");
+	fflush(stdout);
+	while (nworker > 0) {
+		list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
+			if (wentry->fin == -1) {
+				pthread_join(wentry->thid, NULL);
+				list_del(&wentry->lst, &threads);
+				free(wentry);
+				nworker -= 1;
+			}
+		}
+		nanosleep(&itv, NULL);
 	}
 	printf("exit...\n");
-	pthread_join(echo_thread, NULL);
 
 exit_20:
-	while (!cirbuf_empty(wbuf)) {
-		linfo = cirbuf_remove(wbuf);
-		free(linfo);
-	}
-	cirbuf_exit(wbuf);
 	free(buf);
 	close(sock);
 	return retv;
