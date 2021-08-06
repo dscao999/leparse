@@ -95,17 +95,31 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 			fprintf(stdout, "Write input through pipe failed: %s\n",
 					strerror(errno));
 	}
+
 	struct pollfd pfd;
+	int lenrem, curpos;
+
 	pfd.fd = fdin;
 	pfd.events = POLLIN;
 	numb = 0;
+	lenrem = reslen - 1;
+	curpos = 0;
 	do {
 		pfd.revents = 0;
-		sysret = poll(&pfd, 1, 100);
+		sysret = poll(&pfd, 1, 200);
 		if (sysret == 1) {
+			if (lenrem == 0) {
+				elog("Warning: results overflow.\n");
+				lenrem = reslen - 1;
+				curpos = 0;
+			}
 			if ((pfd.revents & POLLIN) != 0) {
-				numb = read(fdin, res, reslen - 1);
+				numb = read(fdin, res+curpos, lenrem);
 				pfd.revents ^= POLLIN;
+				if (numb > 0) {
+					curpos += numb;
+					lenrem -= numb;
+				}
 			}
 			if (pfd.revents && !(pfd.revents & POLLHUP))
 				elog("pipe failed: %X\n", pfd.revents);
