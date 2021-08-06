@@ -86,23 +86,33 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		exit(1);
 	}
 	fdout = pfdout[1];
+	close(pfdout[0]);
 	fdin = pfdin[0];
+	close(pfdin[1]);
 	if (input) {
 		numb = write(fdout, input, strlen(input));
 		if (numb == -1)
 			fprintf(stdout, "Write input through pipe failed: %s\n",
 					strerror(errno));
 	}
-	sysret = waitpid(subpid, &retv, 0);
 	struct pollfd pfd;
 	pfd.fd = fdin;
 	pfd.events = POLLIN;
-	pfd.revents = 0;
 	numb = 0;
-	sysret = poll(&pfd, 1, 100);
-	if (sysret == 1 && (pfd.revents & POLLIN) != 0)
-		numb = read(fdin, res, reslen - 1);
+	do {
+		pfd.revents = 0;
+		sysret = poll(&pfd, 1, 100);
+		if (sysret == 1) {
+			if ((pfd.revents & POLLIN) != 0) {
+				numb = read(fdin, res, reslen - 1);
+				pfd.revents ^= POLLIN;
+			}
+			if (pfd.revents && !(pfd.revents & POLLHUP))
+				elog("pipe failed: %X\n", pfd.revents);
+		}
+	} while (pfd.revents == 0);
 	*(res+numb) = 0;
+	sysret = waitpid(subpid, &retv, 0);
 	if (retv != 0)
 		fprintf(stderr, "execution failed, command: %s\nresponse: %s\n",
 				cmdline, res);
