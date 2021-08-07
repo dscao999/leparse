@@ -12,6 +12,7 @@
 #include <time.h>
 #include "miscs.h"
 #include "list_head.h"
+#include "cpuinfo.h"
 #include "dbproc.h"
 
 struct thread_worker {
@@ -128,6 +129,10 @@ int main(int argc, char *argv[])
 		elog("Cannot bind: %s.\n", strerror(eno));
 		return 2;
 	}
+	numcpus = cpu_cores();
+	if (!cpu_hyper_threading())
+		numcpus *= 2;
+	printf("Maximum workers: %d\n", numcpus);
 
 	memset(&mact, 0, sizeof(mact));
 	mact.sa_handler = sig_handler;
@@ -191,6 +196,7 @@ int main(int argc, char *argv[])
 			continue;
 		}
 		while (nworker >= numcpus) {
+			printf("Stalling...\n");
 			nanosleep(&itv, NULL);
 			list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
 				if (wentry->fin == -1) {
