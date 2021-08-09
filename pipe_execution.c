@@ -13,9 +13,9 @@
 int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 {
 	int sysret, retv, pfdin[2], pfdout[2], idx;
-	int fdout, fdin, numargs, cmdlen;
-	char *curchr, **args, *cmdbuf, *cmd;
-	char *lsl;
+	int fdout, fdin, numargs, cmdlen, inlen;
+	char *curchr, **args, *cmdbuf, *cmd, *lsl;
+	const char *ln, *lnmark;
 	pid_t subpid;
 	int numb, len;
 
@@ -25,7 +25,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	len = strlen(cmdline);
 	if (len < 1)
 		return retv;
-	cmdlen = ((len - 1) / sizeof(char *) + 1) * sizeof(char *);
+	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
 	numargs = 20;
 	cmdbuf = malloc(cmdlen+sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
@@ -89,22 +89,36 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	close(pfdout[0]);
 	fdin = pfdin[0];
 	close(pfdin[1]);
-	if (input) {
-		numb = write(fdout, input, strlen(input));
+
+	struct pollfd pfd;
+	pfd.fd = fdout;
+	pfd.events = POLLOUT;
+	ln = input;
+	while (ln && *ln) {
+		pfd.revents = 0;
+		sysret = poll(&pfd, 1, -1);
+		if (pfd.revents & POLLERR)
+			break;
+		lnmark = strchr(ln, '\n');
+		if (lnmark)
+			inlen = lnmark - ln + 1;
+		else
+			inlen = strlen(ln);
+		numb = write(fdout, ln, inlen);
 		if (numb == -1)
 			fprintf(stdout, "Write input through pipe failed: %s\n",
 					strerror(errno));
+		ln += inlen;
 	}
 
-	struct pollfd pfd;
 	int lenrem, curpos;
 
 	pfd.fd = fdin;
 	pfd.events = POLLIN;
-	numb = 0;
 	lenrem = reslen - 1;
 	curpos = 0;
 	do {
+		numb = 0;
 		pfd.revents = 0;
 		sysret = poll(&pfd, 1, 200);
 		if (sysret == 1) {
@@ -121,11 +135,11 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 					lenrem -= numb;
 				}
 			}
-			if (pfd.revents && !(pfd.revents & POLLHUP))
+			if ((pfd.revents & (~POLLHUP)))
 				elog("pipe failed: %X\n", pfd.revents);
 		}
-	} while (pfd.revents == 0);
-	*(res+numb) = 0;
+	} while (pfd.revents == 0 || numb > 0);
+	*(res+curpos) = 0;
 	sysret = waitpid(subpid, &retv, 0);
 	if (retv != 0)
 		fprintf(stderr, "execution failed, command: %s\nresponse: %s\n",
@@ -163,7 +177,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	if (len < 1)
 		return retv;
 	numargs = 20;
-	cmdlen = ((len - 1) / sizeof(char *) + 1) * sizeof(char *);
+	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
 	cmdbuf = malloc(2*cmdlen + sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
 		fprintf(stderr, "Out of Memory.\n");

@@ -12,6 +12,7 @@
 #include "pipe_execution.h"
 #include "dbproc.h"
 #include "dbconnect.h"
+#include "random_passwd.h"
 
 static inline void fill_osinfo(char *buf, struct os_info *oinf)
 {
@@ -215,12 +216,10 @@ exit_10:
 int dbproc(const struct lease_info *inf)
 {
 	struct maria *db;
-	int retv = 0, idx;
+	int retv = 0;
 	int nfields, found, mac2;
 	MYSQL_ROW row;
 	time_t tm;
-	char *curp;
-	FILE *rndh;
 	const char *uuid;
 	struct os_info *oinf;
 	char *buf;
