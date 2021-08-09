@@ -11,7 +11,7 @@ fmon: lease_mon.o file_monitor.o lease_parse.o
 
 lecho: CFLAGS += -pthread
 lecho: LDFLAGS += -pthread
-lecho: echo_lease.o dbproc.o dbconnect.o pipe_execution.o
+lecho: echo_lease.o dbproc.o dbconnect.o pipe_execution.o random_passwd.o
 	$(LINK.o) $^ $(LIBS) -o $@
 
 rmtexe: rmtexe.o pipe_execution.o

@@ -310,26 +310,8 @@ int dbproc(const struct lease_info *inf)
 	strcpy(oinf->passwd, row[1]);
 	strcpy(oinf->user, row[3]);
 	maria_free_result(db);
-	rndh = fopen("/dev/urandom", "rb");
-	if (unlikely(!rndh)) {
-		elog("Cannot open /dev/urandom: %s\n", strerror(errno));
-		retv = -8;
-		goto exit_20;
-	}
-	for (idx = 0, curp = oinf->passwd_new; idx < 10; idx++, curp++) {
-		do
-			fread(curp, 1, 1, rndh);
-		while (*curp < 0x21 || *curp > 0x7e || *curp == '\'' ||
-				*curp == '"' || *curp == ')' || *curp == '(' ||
-				*curp == '<' || *curp == '>' || *curp == '|' ||
-				*curp == '&' || *curp == '}' || *curp == '{' ||
-				*curp == '#' || *curp == '$' || *curp == ';' ||
-				*curp == '[' || *curp == ']' || *curp == ',' ||
-				*curp == '\\'|| *curp == '`');
 
-	};
-	*curp = 0;
-	fclose(rndh);
+	random_passwd(oinf->passwd_new);
 	printf("new hostname: %s, new password: '%s'\n", oinf->hostname,
 			oinf->passwd_new);
 	retv = ssh_probe(buf, 1024, oinf);
