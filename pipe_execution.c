@@ -123,7 +123,8 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		sysret = poll(&pfd, 1, 200);
 		if (sysret == 1) {
 			if (lenrem == 0) {
-				elog("Warning: results overflow.\n");
+				elog("Warning: command %s results overflow.\n",
+						cmdline);
 				lenrem = reslen - 1;
 				curpos = 0;
 			}

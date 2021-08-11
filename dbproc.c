@@ -72,6 +72,9 @@ static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 	return retv;
 }
 
+static const char *host_id_changed = "WARNING: REMOTE HOST IDENTIFICATION HAS" \
+				     " CHANGED!";
+
 static int update_citizen(struct maria *db, const struct lease_info *inf,
 		int mac2, const char *uuid)
 {
@@ -140,6 +143,8 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	cmdbuf = mesg;
 	sprintf(cmdbuf, "ssh -o BatchMode=yes -l root %s ls", inf->ip);
 	retv = pipe_execute(mesg, 1024, cmdbuf, NULL);
+	if (strstr(mesg, host_id_changed))
+		ssh_remove_stale_ip(inf->ip);
 	if (retv != 0) {
 		retv = maria_query(db, 0, "update citizen set tries = %d where " \
 				"mac = '%s'", tries, inf->mac);
