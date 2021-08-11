@@ -26,7 +26,8 @@ static inline int worker_equal(const struct thread_worker *w1,
 		const struct thread_worker *w2)
 {
 	return (w1->inf.tm == w2->inf.tm) &&
-			(strcmp(w1->inf.mac, w2->inf.mac) == 0);
+			(strcmp(w1->inf.mac, w2->inf.mac) == 0) &&
+			 (w1->inf.leave == w2->inf.leave);
 }
 
 static volatile int global_exit = 0;
