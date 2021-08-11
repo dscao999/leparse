@@ -33,6 +33,6 @@ release: LDFLAGS += -O1
 
 clean:
 	rm -f *.o *.d
-	rm -f fmon lecho dirnot rmtexe
+	rm -f fmon lecho dirnot rmtexe plidm chpass
 
 include $(HOME)/devel/lib/header-dep.mak
