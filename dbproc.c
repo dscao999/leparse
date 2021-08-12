@@ -8,6 +8,7 @@
 #include <linux/random.h>
 #include <errno.h>
 #include <signal.h>
+#include <pwd.h>
 #include "miscs.h"
 #include "pipe_execution.h"
 #include "dbproc.h"
@@ -36,11 +37,21 @@ static inline void fill_osinfo(char *buf, struct os_info *oinf)
 
 static inline void ssh_remove_stale_ip(const char *ip)
 {
-	char *cmd, *res;
+	char *cmd, *res, *known_hosts;
+	struct passwd *pwd;
 	static const char *fmt = "ssh-keygen -R %s";
+	static const char *hosts_old = "/.ssh/known_hosts.old";
+
+	pwd = getpwuid(getuid());
+	assert(pwd);
 
 	cmd = malloc(2048);
 	res = cmd + 1024;
+	known_hosts = cmd;
+	strcpy(known_hosts, pwd->pw_dir);
+	strcat(known_hosts, hosts_old);
+	unlink(known_hosts);
+
 	sprintf(cmd, fmt, ip);
 	pipe_execute(res, 1024, cmd, NULL);
 	free(cmd);
