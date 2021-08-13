@@ -164,7 +164,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		goto exit_10;
 	}
 
-	retv = ssh_execute(mesg, 1024, inf->ip, "../utils/dmi_read/smird", 0);
+	retv = ssh_execute(mesg, 1024, inf->ip, "smird", 0);
 	if (retv != 0) {
 		elog("Cannot get the UUID of %s\n", inf->ip);
 		goto exit_10;
@@ -355,7 +355,7 @@ int dbproc(const struct lease_info *inf)
 		retv = -8;
 		goto exit_20;
 	}
-	retv = ssh_execute(buf, 1024, inf->ip, "../utils/dmi_read/smird", 0);
+	retv = ssh_execute(buf, 1024, inf->ip, "smird", 0);
 	printf("%s\n", buf);
 	if (retv != 0) {
 		retv = -8;
