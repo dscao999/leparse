@@ -136,8 +136,9 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 					lenrem -= numb;
 				}
 			}
-			if ((pfd.revents & (~POLLHUP)))
-				elog("pipe failed: %X\n", pfd.revents);
+			if (pfd.revents & (~(POLLHUP|POLLNVAL)))
+				elog("pipe failed: %X, %s\n",
+						pfd.revents, cmdline);
 		}
 	} while (pfd.revents == 0 || numb > 0);
 	*(res+curpos) = 0;

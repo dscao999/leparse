@@ -45,6 +45,7 @@ int main(int argc, char *argv[])
 	if (!password) {
 		random_passwd(passwd_new);
 		password = passwd_new;
+		printf("New Password: %s\n", passwd_new);
 	}
 
 	struct maria dbc;
@@ -78,7 +79,7 @@ int main(int argc, char *argv[])
 		goto exit_10;
 	} else {
 		curtm = time(NULL);
-		printf("%s is online before %lu seconds.\n",
+		printf("%s is online at %lu seconds before.\n",
 				uuid, curtm - last);
 	}
 

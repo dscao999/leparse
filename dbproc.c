@@ -90,7 +90,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		int mac2, const char *uuid)
 {
 	int retv = 0, nfields, updated, tries;
-	char *mesg, *cmdbuf;
+	char *mesg, *cmdbuf, hostname[16];
 	struct os_info oinf;
 	MYSQL_ROW row;
 	unsigned long tm;
@@ -105,7 +105,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 				"ip2 = '%s' where mac2 = '%s'",
 				(unsigned long)tm, inf->ip, inf->mac);
 		updated = 1;
-	} else if (uuid) {
+	} else if (uuid && strlen(uuid) > 10) {
 		retv = maria_query(db, 0, "update citizen set last = %lu, " \
 				"ip = '%s' where mac = '%s'",
 				(unsigned long)tm, inf->ip, inf->mac);
@@ -172,13 +172,36 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	fill_osinfo(mesg, &oinf);
 	retv = maria_query(db, 1, "select last from citizen where uuid = " \
 			"'%s'", oinf.uuid);
+	if (unlikely(retv != 0)) {
+		elog("Cannot query for uuid: %s.\n", oinf.uuid);
+		goto exit_10;
+	}
 	nfields = mysql_num_fields(db->res);
         assert(nfields == 1);
 	row = mysql_fetch_row(db->res);
 	if (!row) {
-		elog("still no such uuid: %s\n", oinf.uuid);
-		retv = -3;
+		elog("still no such uuid: %s. Try add it to DB\n", oinf.uuid);
 		maria_free_result(db);
+		retv = maria_query(db, 1, "select hostname, hostseq from " \
+				"citizen where mac = '%s'", inf->mac);
+		if (unlikely(retv != 0)) {
+			elog("Cannot select hostname from citizen where mac "\
+					"= %s\n", inf->mac);
+			goto exit_10;
+		}
+		row = mysql_fetch_row(db->res);
+		if (unlikely(!row))  {
+			elog("No hosts with mac = %s\n", inf->mac);
+			goto exit_10;
+		}
+		sprintf(hostname, "%s%04lld", row[0], atoll(row[1])%100000);
+		maria_free_result(db);
+		retv = maria_query(db, 0, "update citizen set uuid = '%s', " \
+				"password = '*', hostname = '%s', " \
+				"serial = '%s' where mac = '%s'",
+				oinf.uuid, hostname, oinf.serial, inf->mac);
+		if (unlikely(retv != 0))
+			elog("Cannot add uuid %s into DB.\n");
 		goto exit_10;
 	}
 	tm = atoll(row[0]);
@@ -195,7 +218,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	retv = maria_query(db, 0, "delete from citizen where mac = " \
 			"'%s'", inf->mac);
 	if (retv)
-		elog("Cannot update citizen.\n");
+		elog("Cannot delete mac = %s from citizen.\n", inf->mac);
 
 exit_10:
 	free(mesg);
@@ -327,8 +350,6 @@ int dbproc(const struct lease_info *inf)
 	maria_free_result(db);
 
 	random_passwd(oinf->passwd_new);
-	printf("new hostname: %s, new password: '%s'\n", oinf->hostname,
-			oinf->passwd_new);
 	retv = ssh_probe(buf, 1024, oinf);
 	printf("%s\n", buf);
 	if (retv != 0) {
@@ -336,6 +357,8 @@ int dbproc(const struct lease_info *inf)
 		retv = -6;
 		goto exit_20;
 	}
+	printf("%s new hostname: %s, new password: '%s'\n", inf->mac,
+			oinf->hostname, oinf->passwd_new);
 	retv = maria_query(db, 0, "start transaction");
 	if (unlikely(retv != 0)) {
 		elog("Cannot start a db transaction.\n");
@@ -346,6 +369,7 @@ int dbproc(const struct lease_info *inf)
 			"password= '%s' where mac = '%s'", oinf->hostname,
 			oinf->passwd_new, inf->mac);
 	if (retv) {
+		elog("Cannot update hostname and password.\n");
 		retv = -7;
 		goto exit_20;
 	}
