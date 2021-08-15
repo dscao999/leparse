@@ -3,5 +3,5 @@
 
 int pipe_execute(char *res, int reslen, const char *cmdline, const char *input);
 int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
-		int rm);
+		const char *input, int rm);
 #endif  /* PIPE_EXECUTION_DSCAO__ */

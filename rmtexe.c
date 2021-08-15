@@ -60,7 +60,7 @@ int main(int argc, char *argv[])
 		pntlen = sprintf(cmdline+pntpos, "%s ", argv[i]);
 		pntpos += pntlen;
 	}
-	retv = ssh_execute(res, reslen, peer, cmdline, rm);
+	retv = ssh_execute(res, reslen, peer, cmdline, NULL, rm);
 	if (retv != 0)
 		elog("Remote execution failed.\n");
 	printf("%s\n", res);

@@ -161,7 +161,7 @@ exit_10:
 }
 
 int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
-		int rm)
+		const char *input, int rm)
 {
 	struct stat mst;
 	char *cmdbuf, **args, *curchr, *cmdfile, *cmdexe; 
@@ -208,7 +208,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			goto exit_10;
 		}
 		sprintf(cmdexe, cpfmt, cmdfile, ip);
-		retv = pipe_execute(res, reslen, cmdexe, NULL);
+		retv = pipe_execute(res, reslen, cmdexe, input);
 		if (retv != 0) {
 			elog("%s failed: %s\n", cmdexe, res);
 			goto exit_10;
@@ -224,7 +224,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		pntlen = sprintf(cmdexe+pntpos, " %s", args[idx]);
 		pntpos += pntlen;
 	}
-	retv = pipe_execute(res, reslen, cmdexe, NULL);
+	retv = pipe_execute(res, reslen, cmdexe, input);
 	if (retv != 0) {
 		elog("%s failed: %s\n", cmdexe, res);
 		goto exit_10;
