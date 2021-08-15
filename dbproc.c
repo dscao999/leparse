@@ -90,7 +90,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		int mac2, const char *uuid)
 {
 	int retv = 0, nfields, updated, tries;
-	char *mesg, *cmdbuf, hostname[16];
+	char *mesg, *cmdbuf, hostname[16], *input;
 	struct os_info oinf;
 	MYSQL_ROW row;
 	unsigned long tm;
@@ -149,9 +149,9 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		return retv;
 	}
 
-	mesg = malloc(1024);
+	mesg = malloc(2048);
 	memset(&oinf, 0, sizeof(oinf));
-	cmdbuf = mesg;
+	cmdbuf = mesg + 1024;
 	sprintf(cmdbuf, "ssh -o BatchMode=yes -l root %s ls", inf->ip);
 	retv = pipe_execute(mesg, 1024, cmdbuf, NULL);
 	if (strstr(mesg, host_id_changed))
@@ -164,7 +164,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 		goto exit_10;
 	}
 
-	retv = ssh_execute(mesg, 1024, inf->ip, "smird", 0);
+	retv = ssh_execute(mesg, 1024, inf->ip, "smird", NULL, 0);
 	if (retv != 0) {
 		elog("Cannot get the UUID of %s\n", inf->ip);
 		goto exit_10;
@@ -182,8 +182,8 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	if (!row) {
 		elog("still no such uuid: %s. Try add it to DB\n", oinf.uuid);
 		maria_free_result(db);
-		retv = maria_query(db, 1, "select hostname, hostseq from " \
-				"citizen where mac = '%s'", inf->mac);
+		retv = maria_query(db, 1, "select hostname, hostseq, admin " \
+				"from citizen where mac = '%s'", inf->mac);
 		if (unlikely(retv != 0)) {
 			elog("Cannot select hostname from citizen where mac "\
 					"= %s\n", inf->mac);
@@ -195,13 +195,37 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 			goto exit_10;
 		}
 		sprintf(hostname, "%s%04lld", row[0], atoll(row[1])%100000);
+		strcpy(oinf.user, row[2]);
 		maria_free_result(db);
+		sprintf(cmdbuf, "passwd %s", oinf.user);
+		random_passwd(oinf.passwd_new);
+		input = cmdbuf + 768;
+		strcpy(input, oinf.passwd_new);
+		strcat(input, "\n");
+		strcat(input, oinf.passwd_new);
+		strcat(input, "\n");
+		retv = maria_query(db, 0, "start transaction");
+		if (unlikely(retv != 0)) {
+			elog("Cannot start a DB transaction.\n");
+			goto exit_10;
+		}
 		retv = maria_query(db, 0, "update citizen set uuid = '%s', " \
-				"password = '*', hostname = '%s', " \
+				"password = '%s', hostname = '%s', " \
 				"serial = '%s' where mac = '%s'",
-				oinf.uuid, hostname, oinf.serial, inf->mac);
-		if (unlikely(retv != 0))
-			elog("Cannot add uuid %s into DB.\n");
+				oinf.uuid, oinf.passwd_new, hostname,
+				oinf.serial, inf->mac);
+		if (unlikely(retv != 0)) {
+			elog("Cannot add uuid %s into DB.\n", oinf.uuid);
+			goto exit_10;
+		}
+		retv = ssh_execute(mesg, 1024, inf->ip, cmdbuf, input, 0);
+		if (unlikely(retv != 0)) {
+			elog("Cannot change password for %s\n", inf->ip);
+			goto exit_10;
+		}
+		maria_query(db, 0, "commit");
+		printf("Password of %s changed to: %s\n",
+				oinf.uuid, oinf.passwd_new);
 		goto exit_10;
 	}
 	tm = atoll(row[0]);
@@ -379,7 +403,7 @@ int dbproc(const struct lease_info *inf)
 		retv = -8;
 		goto exit_20;
 	}
-	retv = ssh_execute(buf, 1024, inf->ip, "smird", 0);
+	retv = ssh_execute(buf, 1024, inf->ip, "smird", NULL, 0);
 	printf("%s\n", buf);
 	if (retv != 0) {
 		retv = -8;
