@@ -17,6 +17,7 @@
 #include <sys/random.h>
 
 static volatile int global_exit = 0;
+int verbose = 0;
 
 static void sig_handler(int sig)
 {
@@ -96,8 +97,7 @@ struct idinfo * getinfo(void)
 					strerror(errno));
 			break;
 		}
-		if ((dent->d_type & DT_LNK) == 0 ||
-				strcmp(dent->d_name, "lo") == 0)
+		if ((dent->d_type & DT_LNK) == 0)
 			continue;
 		strcpy(iface, dent->d_name);
 		strcpy(macfile, netdir);
@@ -110,26 +110,7 @@ struct idinfo * getinfo(void)
 			continue;
 		}
 		lnknam[numb] = 0;
-		if (strstr(lnknam, "/usb"))
-			continue;
-		strcpy(lnknam, macfile);
-		strcat(lnknam, "/type");
-		fin = fopen(lnknam, "rb");
-		if (!fin) {
-			fprintf(stderr, "Cannot open %s for read: %s\n",
-					lnknam, strerror(errno));
-			continue;
-		}
-		numb = fread(buf, 1, 256, fin);
-		if (numb <= 0) {
-			fprintf(stderr, "Cannot read %s: %s\n", lnknam,
-					strerror(errno));
-			fclose(fin);
-			continue;
-		}
-		fclose(fin);
-		buf[numb] = 0;
-		if (atoi(buf) != 1)
+		if (strstr(lnknam, "/usb") || strstr(lnknam, "/virtual"))
 			continue;
 		strcpy(mreq->ifr_name, iface);
 		numb = ioctl(sockd, SIOCGIFADDR, mreq);
@@ -186,7 +167,7 @@ struct idinfo * getinfo(void)
 static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 		int leave)
 {
-	struct timespec itm;
+	struct timespec itm, rtm;
 	unsigned long rndsec;
 	const struct idinfo *curinf;
 	int len, sysret;
@@ -211,8 +192,19 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
 			fprintf(stderr, "%d, len: %d, '%s'\n", serv->sock, len, buf);
 		}
+		if (verbose)
+			printf("%s\n", buf);
 	}
-	nanosleep(&itm, NULL);
+	do {
+		sysret = nanosleep(&itm, &rtm);
+		if (sysret == -1) {
+			if (errno != EINTR) {
+				fprintf(stderr, "nanosleep failed: %s\n", strerror(errno));
+				break;
+			}
+			itm = rtm;
+		}
+	} while (sysret == -1);
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
 		len = sprintf(buf, "%s %s { start %lu; " \
 				"hardware ethernet %s; }", verb, curinf->ip,
@@ -224,12 +216,14 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 			fprintf(stderr, "sendto failed: %s\n", strerror(errno));
 			fprintf(stderr, "%d, len: %d, '%s'\n", serv->sock, len, buf);
 		}
+		if (verbose)
+			printf("%s\n", buf);
 	}
 }
 
 int main(int argc, char *argv[])
 {
-	int fin, c, retv, leave, verbose;
+	int fin, c, retv, leave;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 	struct sigaction mact;
