@@ -20,6 +20,7 @@ struct thread_worker {
 	pthread_t thid;
 	struct list_head lst;
 	int fin;
+	volatile int *w_count;
 };
 
 static inline int worker_equal(const struct thread_worker *w1,
@@ -73,9 +74,11 @@ void * process_echo(void *dat)
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 
 	retv = dbproc(&me->inf);
+	atomic_dec(me->w_count);
 	if (retv)
 		elog("Somethin wrong in lease processing.\n");
-	while (tm - me->inf.tm < 2) {
+	tm = time(NULL);
+	while (tm - me->inf.tm < 3) {
 		op_nanosleep(&itv);
 		tm = time(NULL);
 	}
@@ -97,6 +100,7 @@ int main(int argc, char *argv[])
 	struct lease_info *linfo;
 	time_t tm;
 	int nworker = 0;
+	volatile int w_count = 0;
 	struct list_head threads;
 	struct thread_worker *worker, *wentry, *nxtw;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
@@ -209,6 +213,7 @@ int main(int argc, char *argv[])
 			elog("Out of Memory.\n");
 			break;
 		}
+		worker->w_count = &w_count;
 		linfo = &worker->inf;
 		linfo->tm = tm;
 		linfo->leave = leave;
@@ -222,9 +227,9 @@ int main(int argc, char *argv[])
 			free(worker);
 			continue;
 		}
-		while (nworker >= numcpus) {
+		while (w_count >= numcpus) {
 			printf("Stalling...\n");
-			nanosleep(&itv, NULL);
+			op_nanosleep(&itv);
 			list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
 				if (wentry->fin == -1) {
 					pthread_join(wentry->thid, NULL);
@@ -236,10 +241,12 @@ int main(int argc, char *argv[])
 		}
 		
 		worker->fin = 0;
+		atomic_inc(&w_count);
 		sysret = pthread_create(&worker->thid, NULL, process_echo,
 				worker);
 		if (sysret) {
 			elog("Thread creation failed: %s\n", strerror(sysret));
+			atomic_dec(&w_count);
 			free(worker);
 		} else
 			list_add(&worker->lst, &threads);
