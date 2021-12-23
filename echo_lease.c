@@ -15,6 +15,8 @@
 #include "cpuinfo.h"
 #include "dbproc.h"
 
+static int verbose = 0;
+
 struct thread_worker {
 	struct lease_info inf;
 	pthread_t thid;
@@ -51,14 +53,13 @@ static void op_nanosleep(const struct timespec *tm)
 	do {
 		sysret = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &abstm, NULL);
 		if (sysret == -1 && errno != EINTR) {
-			fprintf(stderr, "clock_nanosleep failed: %s\n", strerror(errno));
+			elog("clock_nanosleep failed: %s\n", strerror(errno));
 			break;
 		}
 	} while (sysret == -1);
 }
 
 static volatile int global_exit = 0;
-
 
 void sig_handler(int sig)
 {
@@ -86,19 +87,66 @@ void * process_echo(void *dat)
 	return NULL;
 }
 
+static int lease_parse(const char *info, struct lease_info *linfo)
+{
+	char *buf, *tok, *ip, *start, *mac;
+	int retv = 0, len, leave;
+	long tm;
+	static const char *token = " ;{}";
+
+	len = strlen(info);
+	buf = malloc(len+1);
+	if (!buf) {
+		elog("Out of Memory");
+		return -1;
+	}
+	strcpy(buf, info);
+	tok = strtok(buf, token);
+	leave = strcmp(tok, "leave") == 0;
+	if (strcmp(tok, "lease") != 0 && !leave)
+		goto exit_10;
+	ip = strtok(NULL, token);
+	tok = strtok(NULL, token);
+	if (strcmp(tok, "start") != 0)
+		goto exit_10;
+	start = strtok(NULL, token);
+	tm = atoll(start);
+	tok = strtok(NULL, token);
+	if (strcmp(tok, "hardware") != 0)
+		goto exit_10;
+	tok = strtok(NULL, token);
+	if (strcmp(tok, "ethernet") != 0)
+		goto exit_10;
+	mac = strtok(NULL, token);
+	linfo->tm = tm;
+	linfo->leave = leave;
+	strcpy(linfo->mac, mac);
+	strcpy(linfo->ip, ip);
+	retv = len;
+
+exit_10:
+	free(buf);
+	return retv;
+}
+
+static void dump_worker(const struct thread_worker *worker)
+{
+	elog("Number of works: %d, status: %d\n", *worker->w_count, worker->fin);
+	dump_list_head(&worker->lst);
+	dump_lease_info(&worker->inf);
+}
+
 int main(int argc, char *argv[])
 {
 	struct sigaction mact;
-	struct addrinfo hint, *svrinfo, *adr;
-	int retv, sock, eno, buflen, fin, c, leave, verbose;
-	int numcpus = 6, sysret;
+	struct addrinfo hint, *svrinfo;
+	int retv, sock, buflen, fin, c;
+	int numcpus = 0, sysret;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
-	char *buf, *tok, *ip, *start, *mac;
+	char *buf;
 	const char *port = "7800";
-	struct lease_info *linfo;
-	time_t tm;
 	int nworker = 0;
 	volatile int w_count = 0;
 	struct list_head threads;
@@ -111,7 +159,7 @@ int main(int argc, char *argv[])
 	opterr = 0;
 	fin = 0;
 	do {
-		c = getopt(argc, argv, ":p:v");
+		c = getopt(argc, argv, ":p:n:v");
 		switch (c) {
 		case -1:
 			fin = 1;
@@ -123,6 +171,9 @@ int main(int argc, char *argv[])
 			elog("Missing arguments for %c\n",
 					(char)optopt);
 			break;
+		case 'n':
+			numcpus = atoi(optarg);
+			break;
 		case 'p':
 			port = optarg;
 			break;
@@ -133,6 +184,9 @@ int main(int argc, char *argv[])
 			assert(0);
 		}
 	} while (fin == 0);
+	if (unlikely(verbose)) {
+		elog("Listening on port: %s\n", port);
+	}
 	memset(&hint, 0, sizeof(hint));
 	hint.ai_family = AF_INET;
 	hint.ai_socktype = SOCK_DGRAM;
@@ -142,28 +196,28 @@ int main(int argc, char *argv[])
 		elog("getaddrinfo failed: %s\n", gai_strerror(retv));
 		return 1;
 	}
-	eno = 0;
-	for (adr = svrinfo; adr != NULL; adr = adr->ai_next) {
-		sock = socket(adr->ai_family, adr->ai_socktype,
-				adr->ai_protocol);
-		if (sock == -1)
-			continue;
-
-		retv = bind(sock, adr->ai_addr, adr->ai_addrlen);
-		eno = errno;
-		if (retv == 0)
-			break;
-		close(sock);
+	sock = socket(svrinfo->ai_family, svrinfo->ai_socktype,
+			svrinfo->ai_protocol);
+	if (unlikely(sock == -1)) {
+		elog("Cannot create socket: %s\n", strerror(errno));
+		freeaddrinfo(svrinfo);
+		return 1;
 	}
-	freeaddrinfo(svrinfo);
-	if (adr == NULL) {
-		elog("Cannot bind: %s.\n", strerror(eno));
+
+	retv = bind(sock, svrinfo->ai_addr, svrinfo->ai_addrlen);
+	if (unlikely(retv == -1)) {
+		elog("Cannot bind: %s.\n", strerror(errno));
+		freeaddrinfo(svrinfo);
 		return 2;
 	}
-	numcpus = cpu_cores();
-	if (!cpu_hyper_threading())
-		numcpus *= 2;
-	printf("Maximum workers: %d\n", numcpus);
+	freeaddrinfo(svrinfo);
+
+	if (numcpus == 0) {
+		numcpus = cpu_cores();
+		if (!cpu_hyper_threading())
+			numcpus *= 2;
+	}
+	elog("Maximum workers: %d\n", numcpus);
 
 	memset(&mact, 0, sizeof(mact));
 	mact.sa_handler = sig_handler;
@@ -174,6 +228,10 @@ int main(int argc, char *argv[])
 	INIT_LIST_HEAD(&threads);
 	buflen = 1024;
 	buf = malloc(buflen);
+	if (!buf) {
+		elog("Out of Memory");
+		return 3;
+	}
 
 	while (global_exit == 0) {
 		peer_addr_len = sizeof(struct sockaddr_storage);
@@ -183,42 +241,31 @@ int main(int argc, char *argv[])
 			elog("recvfrom failed: %s\n",
 					strerror(errno));
 			retv = 5;
-			goto exit_20;
+			goto exit_30;
 		}
 		if (nread <= 0)
 			continue;
 		buf[nread] = 0;
 		if (verbose)
-			printf("%s\n", buf);
+			elog("%s\n", buf);
 
-		tok = strtok(buf, " ;{}");
-		leave = strcmp(buf, "leave") == 0;
-		if (strcmp(buf, "lease") != 0 && !leave)
-			continue;
-		ip = strtok(NULL, " ;{}");
-		tok = strtok(NULL, " ;{}");
-		if (strcmp(tok, "start") != 0)
-			continue;
-		start = strtok(NULL, " ;{}");
-		tm = atoll(start);
-		tok = strtok(NULL, " ;{}");
-		if (strcmp(tok, "hardware") != 0)
-			continue;
-		tok = strtok(NULL, " ;{}");
-		if (strcmp(tok, "ethernet") != 0)
-			continue;
-		mac = strtok(NULL, " ;{}");
 		worker = malloc(sizeof(struct thread_worker));
 		if (!worker) {
 			elog("Out of Memory.\n");
-			break;
+			retv = 6;
+			goto exit_30;
 		}
 		worker->w_count = &w_count;
-		linfo = &worker->inf;
-		linfo->tm = tm;
-		linfo->leave = leave;
-		strcpy(linfo->mac, mac);
-		strcpy(linfo->ip, ip);
+		worker->fin = 0;
+		retv = lease_parse(buf, &worker->inf);
+		if (retv == 0) {
+			free(worker);
+			continue;
+		} else if (retv == -1) {
+			free(worker);
+			retv = 7;
+			goto exit_30;
+		}
 		list_for_each_entry(wentry, &threads, lst) {
 			if (worker_equal(wentry, worker))
 				break;
@@ -228,7 +275,7 @@ int main(int argc, char *argv[])
 			continue;
 		}
 		while (w_count >= numcpus) {
-			printf("Stalling...\n");
+			elog("Stalling...\n");
 			op_nanosleep(&itv);
 			list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
 				if (wentry->fin == -1) {
@@ -240,7 +287,6 @@ int main(int argc, char *argv[])
 			}
 		}
 		
-		worker->fin = 0;
 		atomic_inc(&w_count);
 		sysret = pthread_create(&worker->thid, NULL, process_echo,
 				worker);
@@ -248,8 +294,11 @@ int main(int argc, char *argv[])
 			elog("Thread creation failed: %s\n", strerror(sysret));
 			atomic_dec(&w_count);
 			free(worker);
-		} else
-			list_add(&worker->lst, &threads);
+			continue;
+		}
+		list_add(&worker->lst, &threads);
+		if (verbose)
+			dump_worker(worker);
 		list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
 			if (wentry->fin == -1) {
 				pthread_join(wentry->thid, NULL);
@@ -259,7 +308,9 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
-	printf("Waiting for all workers to finish...");
+
+exit_30:
+	elog("Waiting for all workers to finish...\n");
 	fflush(stdout);
 	while (nworker > 0) {
 		list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
@@ -272,9 +323,8 @@ int main(int argc, char *argv[])
 		}
 		nanosleep(&itv, NULL);
 	}
-	printf("exit...\n");
+	elog("exit...\n");
 
-exit_20:
 	free(buf);
 	close(sock);
 	return retv;

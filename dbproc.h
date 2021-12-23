@@ -18,5 +18,11 @@ struct os_info {
 	const char *ip;
 };
 
+static inline void dump_lease_info(const struct lease_info *linfo)
+{
+	elog("Timestamp: %ld Mac: %s IP: %s Operation: %s\n", linfo->tm,
+			linfo->mac, linfo->ip, (linfo->leave)? "Leave":"Lease");
+}
+
 int dbproc(const struct lease_info *inf);
 #endif  /* DBPROC_DSCAO__ */
