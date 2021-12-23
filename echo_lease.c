@@ -155,6 +155,7 @@ int main(int argc, char *argv[])
 	extern char *optarg;
 	extern int opterr, optopt;
 
+	elog_init();
 	verbose = 0;
 	opterr = 0;
 	fin = 0;
