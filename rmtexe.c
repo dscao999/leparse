@@ -5,6 +5,8 @@
 #include "miscs.h"
 #include "pipe_execution.h"
 
+static int verbose = 0;
+
 int main(int argc, char *argv[])
 {
 	int c, fin, rm, reslen, retv;
@@ -20,7 +22,7 @@ int main(int argc, char *argv[])
 	opterr = 0;
 	fin = 0;
 	do {
-		c = getopt(argc, argv, ":r:d");
+		c = getopt(argc, argv, ":r:dv");
 		switch(c) {
 		case '?':
 			elog("unknown option: %c\n", (char)optopt);
@@ -33,6 +35,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'd':
 			rm = 1;
+			break;
+		case 'v':
+			verbose = 1;
 			break;
 		case -1:
 			fin = 1;
@@ -63,7 +68,8 @@ int main(int argc, char *argv[])
 	retv = ssh_execute(res, reslen, peer, cmdline, NULL, rm);
 	if (retv != 0)
 		elog("Remote execution failed.\n");
-	printf("%s\n", res);
+	if (verbose)
+		elog("%s\n", res);
 	free(res);
 	return retv;
 }

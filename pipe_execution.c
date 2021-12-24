@@ -60,7 +60,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		args[0] = lsl + 1;
 	subpid = fork();
 	if (unlikely(subpid == -1)) {
-		fprintf(stderr, "fork failed: %s\n", strerror(errno));
+		elog("fork failed: %s\n", strerror(errno));
 		retv = -errno;
 		goto exit_30;
 	}
@@ -82,7 +82,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		else
 			sysret = execvp(cmd, args);
 		if (sysret == -1)
-			fprintf(stderr, "execv failed: %s\n", strerror(errno));
+			elog("execv failed: %s\n", strerror(errno));
 		exit(1);
 	}
 	fdout = pfdout[1];
@@ -106,7 +106,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 			inlen = strlen(ln);
 		numb = write(fdout, ln, inlen);
 		if (numb == -1)
-			fprintf(stdout, "Write input through pipe failed: %s\n",
+			elog("Write input through pipe failed: %s\n",
 					strerror(errno));
 		ln += inlen;
 	}
@@ -144,7 +144,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	*(res+curpos) = 0;
 	sysret = waitpid(subpid, &retv, 0);
 	if (retv != 0)
-		fprintf(stderr, "execution failed, command: %s\nresponse: %s\n",
+		elog("execution failed, command: %s\nresponse: %s\n",
 				cmdline, res);
 
 exit_30:
@@ -182,7 +182,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
 	cmdbuf = malloc(2*cmdlen + sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
-		fprintf(stderr, "Out of Memory.\n");
+		elog("Out of Memory.\n");
 		return -100;
 	}
 	args = (char **)(cmdbuf + cmdlen);
@@ -202,7 +202,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	if (lsl) {
 		sysret = stat(cmdfile, &mst);
 		if (sysret == -1) {
-			fprintf(stderr, "No such file %s: %s\n", cmdfile,
+			elog("No such file %s: %s\n", cmdfile,
 					strerror(errno));
 			retv = -errno;
 			goto exit_10;
