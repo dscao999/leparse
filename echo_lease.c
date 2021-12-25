@@ -15,7 +15,7 @@
 #include "cpuinfo.h"
 #include "dbproc.h"
 
-static int verbose = 0;
+int verbose = 0;
 
 struct thread_worker {
 	struct lease_info inf;

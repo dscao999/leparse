@@ -24,5 +24,7 @@ static inline void dump_lease_info(const struct lease_info *linfo)
 			linfo->mac, linfo->ip, (linfo->leave)? "Leave":"Lease");
 }
 
+extern int verbose;
+
 int dbproc(const struct lease_info *inf);
 #endif  /* DBPROC_DSCAO__ */

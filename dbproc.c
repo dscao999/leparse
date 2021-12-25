@@ -375,13 +375,14 @@ int dbproc(const struct lease_info *inf)
 
 	random_passwd(oinf->passwd_new);
 	retv = ssh_probe(buf, 1024, oinf);
-	printf("%s\n", buf);
+	if (verbose)
+		elog("%s\n", buf);
 	if (retv != 0) {
 		elog("ssh_probe %s failed\n", oinf->ip);
 		retv = -6;
 		goto exit_20;
 	}
-	printf("%s new hostname: %s, new password: '%s'\n", inf->mac,
+	elog("%s new hostname: %s, new password: '%s'\n", inf->mac,
 			oinf->hostname, oinf->passwd_new);
 	retv = maria_query(db, 0, "start transaction");
 	if (unlikely(retv != 0)) {
@@ -404,7 +405,8 @@ int dbproc(const struct lease_info *inf)
 		goto exit_20;
 	}
 	retv = ssh_execute(buf, 1024, inf->ip, "smird", NULL, 0);
-	printf("%s\n", buf);
+	if (verbose)
+		elog("%s\n", buf);
 	if (retv != 0) {
 		retv = -8;
 		goto exit_20;
