@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -10,9 +11,13 @@
 #include <assert.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <pwd.h>
 #include "miscs.h"
 #include "list_head.h"
 #include "cpuinfo.h"
+#include "pipe_execution.h"
 #include "dbproc.h"
 
 int verbose = 0;
@@ -21,8 +26,10 @@ struct thread_worker {
 	struct lease_info inf;
 	pthread_t thid;
 	struct list_head lst;
-	int fin;
 	volatile int *w_count;
+	const char *user_name;
+	int fin;
+	int sem;
 };
 
 static inline int worker_equal(const struct thread_worker *w1,
@@ -74,7 +81,7 @@ void * process_echo(void *dat)
 	time_t tm;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 
-	retv = dbproc(&me->inf);
+	retv = dbproc(&me->inf, me->sem, me->user_name);
 	atomic_dec(me->w_count);
 	if (retv)
 		elog("Somethin wrong in lease processing.\n");
@@ -141,13 +148,12 @@ int main(int argc, char *argv[])
 	struct sigaction mact;
 	struct addrinfo hint, *svrinfo;
 	int retv, sock, buflen, fin, c;
-	int numcpus = 0, sysret;
+	int numcpus = 0, sysret, sem, len;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
-	char *buf;
+	char *buf, user_name[24];
 	const char *port = "7800";
-	int nworker = 0;
 	volatile int w_count = 0;
 	struct list_head threads;
 	struct thread_worker *worker, *wentry, *nxtw;
@@ -185,7 +191,7 @@ int main(int argc, char *argv[])
 			assert(0);
 		}
 	} while (fin == 0);
-	if (unlikely(verbose)) {
+	if (verbose) {
 		elog("Listening on port: %s\n", port);
 	}
 	memset(&hint, 0, sizeof(hint));
@@ -218,6 +224,7 @@ int main(int argc, char *argv[])
 		if (!cpu_hyper_threading())
 			numcpus *= 2;
 	}
+/*	numcpus = 1; */
 	elog("Maximum workers: %d\n", numcpus);
 
 	memset(&mact, 0, sizeof(mact));
@@ -229,11 +236,66 @@ int main(int argc, char *argv[])
 	INIT_LIST_HEAD(&threads);
 	buflen = 1024;
 	buf = malloc(buflen);
-	if (!buf) {
-		elog("Out of Memory");
+	if (unlikely(!buf)) {
+		elog("Fatal Error! Out of Memory in %s\n", __func__);
 		return 3;
 	}
 
+	struct passwd *pwd;
+	struct stat *mst;
+	int genkey = 0;
+	mst = (struct stat *)(buf + 1024 - sizeof(struct stat));
+	pwd = getpwuid(getuid());
+	if (unlikely(!pwd)) {
+		elog("Fatal Error! getpwuid failed: %s\n", strerror(errno));
+		retv = 4;
+		goto exit_10;
+	}
+	strcpy(user_name, pwd->pw_name);
+	strcpy(buf, pwd->pw_dir);
+	strcat(buf, "/.ssh/id_ecdsa");
+	if (stat(buf, mst) != 0) 
+		genkey = 1;
+	strcpy(buf, pwd->pw_dir);
+	strcat(buf, "/.ssh/id_ecdsa.pub");
+	if (stat(buf, mst) != 0)
+		genkey = 1;
+	if (genkey) {
+		strcpy(buf, pwd->pw_dir);
+		strcat(buf, "/.ssh/id_ecdsa");
+		unlink(buf);
+		strcpy(buf, pwd->pw_dir);
+		strcat(buf, "/.ssh/id_ecdsa.pub");
+		unlink(buf);
+		len = sprintf(buf, "ssh-keygen -t ecdsa -N \"\" " \
+				"-f %s/.ssh/id_ecdsa", pwd->pw_dir); 
+		retv = pipe_execute(buf+len, buflen-len, buf, NULL);
+		if (verbose)
+			elog("%s\n", buf+len);
+		if (retv) {
+			elog("Fatal Error! Cannot generate ssh key\n");
+			goto exit_10;
+		}
+	}
+
+	sem = semget(IPC_PRIVATE, 1, IPC_CREAT|IPC_EXCL|0600);
+	if (unlikely(sem == -1)) {
+		elog("Cannot get a semphore set: %s\n", strerror(errno));
+		goto exit_10;
+	}
+
+	union semun {
+		int val;
+		struct semid_ds *buf;
+		unsigned short *array;
+		struct seminfo *__buf;
+	} smset;
+	smset.val = 1;
+	retv = semctl(sem, 0, SETVAL,  smset);
+	if (unlikely(retv == -1)) {
+		elog("Cannot set initial semphore: %s\n", strerror(errno));
+		goto exit_20;
+	}
 	while (global_exit == 0) {
 		peer_addr_len = sizeof(struct sockaddr_storage);
 		nread = recvfrom(sock, buf, buflen - 1, 0,
@@ -258,11 +320,13 @@ int main(int argc, char *argv[])
 		}
 		worker->w_count = &w_count;
 		worker->fin = 0;
-		retv = lease_parse(buf, &worker->inf);
-		if (retv == 0) {
+		worker->sem = sem;
+		worker->user_name = user_name;
+		sysret = lease_parse(buf, &worker->inf);
+		if (sysret == 0) {
 			free(worker);
 			continue;
-		} else if (retv == -1) {
+		} else if (sysret == -1) {
 			free(worker);
 			retv = 7;
 			goto exit_30;
@@ -273,6 +337,7 @@ int main(int argc, char *argv[])
 		}
 		if (&wentry->lst != &threads) {
 			free(worker);
+			printf("Identical lease ignored\n");
 			continue;
 		}
 		while (w_count >= numcpus) {
@@ -283,7 +348,6 @@ int main(int argc, char *argv[])
 					pthread_join(wentry->thid, NULL);
 					list_del(&wentry->lst, &threads);
 					free(wentry);
-					nworker -= 1;
 				}
 			}
 		}
@@ -298,34 +362,31 @@ int main(int argc, char *argv[])
 			continue;
 		}
 		list_add(&worker->lst, &threads);
-		if (verbose)
-			dump_worker(worker);
 		list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
 			if (wentry->fin == -1) {
 				pthread_join(wentry->thid, NULL);
 				list_del(&wentry->lst, &threads);
 				free(wentry);
-				nworker -= 1;
 			}
 		}
 	}
 
 exit_30:
 	elog("Waiting for all workers to finish...\n");
-	fflush(stdout);
-	while (nworker > 0) {
+	do
 		list_for_each_entry_safe(wentry, nxtw, &threads, lst) {
 			if (wentry->fin == -1) {
 				pthread_join(wentry->thid, NULL);
 				list_del(&wentry->lst, &threads);
 				free(wentry);
-				nworker -= 1;
 			}
 		}
-		nanosleep(&itv, NULL);
-	}
+	while (!list_empty(&threads));
 	elog("exit...\n");
 
+exit_20:
+	semctl(sem, IPC_RMID, 0);
+exit_10:
 	free(buf);
 	close(sock);
 	return retv;

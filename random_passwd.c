@@ -26,7 +26,7 @@ void random_passwd(char *passwd_new)
 				*curp == '#' || *curp == '$' || *curp == ';' ||
 				*curp == '[' || *curp == ']' || *curp == ',' ||
 				*curp == '\\'|| *curp == '`' || *curp == '~' ||
-				*curp == ':' || *curp == '/');
+				*curp == ':' || *curp == '/' || *curp == '-');
 
 	};
 	*curp = 0;

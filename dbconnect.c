@@ -3,13 +3,14 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <stdlib.h>
+#include <string.h>
 #include "miscs.h"
 #include "dbconnect.h"
 
-int maria_init(struct maria *db, const char *dbname)
+int maria_init(struct maria *db, const char *dbname, const char *usrnam)
 {
 	int retv = 0;
-	struct passwd *pwd;
+	MYSQL *sqlhand;
 
 	db->stmt = malloc(1024);
 	if (unlikely(!db->stmt)) {
@@ -22,11 +23,11 @@ int maria_init(struct maria *db, const char *dbname)
 		retv = -1;
 		goto exit_10;
 	}
-	pwd = getpwuid(getuid());
-	db->dbh = mysql_real_connect(db->dbh, NULL, pwd->pw_name, NULL, dbname,
+	sqlhand = mysql_real_connect(db->dbh, NULL, usrnam, NULL, dbname,
 			0, NULL, 0);
-	if (unlikely(!db->dbh)) {
-		elog("maria: Cannot connect to database.\n");
+	if (unlikely(!sqlhand)) {
+		elog("maria: Cannot connect to database: %s\n", 
+				mysql_error(db->dbh));
 		retv = -2;
 		goto exit_20;
 	}
@@ -58,8 +59,9 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 	va_end(ap);
 	retv = mysql_query(db->dbh, db->stmt);
 	if (unlikely(retv)) {
-		elog("DB Statement '%s' failed: %s\n", db->stmt,
-				mysql_error(db->dbh));
+		if (likely(strcmp(db->stmt, COMMIT) != 0))
+			elog("DB Statement \"%s\" failed: %s\n", db->stmt,
+					mysql_error(db->dbh));
 		return retv;
 	}
 	if (!fetch)

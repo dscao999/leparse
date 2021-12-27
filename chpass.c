@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <errno.h>
 #include "miscs.h"
 #include "dbconnect.h"
 #include "random_passwd.h"
@@ -14,6 +17,7 @@ int main(int argc, char *argv[])
 	int c, fin, reslen, retv;
 	const char *uuid = NULL, *password = NULL;
 	char passwd_new[16], admin[12], *res, *cmd, *input;
+	struct passwd *uent;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
 
@@ -47,13 +51,18 @@ int main(int argc, char *argv[])
 		password = passwd_new;
 		printf("New Password: %s\n", passwd_new);
 	}
+	uent = getpwuid(getuid());
+	if (unlikely(!uent)) {
+		elog("getpwuid failed: %s\n", strerror(errno));
+		return 2;
+	}
 
 	struct maria dbc;
 	MYSQL_ROW row;
 	char ip[48];
 	time_t last, curtm;
 
-	retv = maria_init(&dbc, "lidm");
+	retv = maria_init(&dbc, "lidm", uent->pw_name);
 	if (unlikely(retv != 0)) {
 		elog("Cannot connect to database.\n");
 		return retv;
