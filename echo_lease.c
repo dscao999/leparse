@@ -28,8 +28,9 @@ struct thread_worker {
 	struct list_head lst;
 	volatile int *w_count;
 	const char *user_name;
-	int fin;
+	void *id;
 	int sem;
+	int fin;
 };
 
 static inline int worker_equal(const struct thread_worker *w1,
@@ -108,13 +109,6 @@ static int lease_parse(const char *info, struct lease_info *linfo)
 exit_10:
 	free(buf);
 	return retv;
-}
-
-static void dump_worker(const struct thread_worker *worker)
-{
-	elog("Number of works: %d, status: %d\n", *worker->w_count, worker->fin);
-	dump_list_head(&worker->lst);
-	dump_lease_info(&worker->inf);
 }
 
 int main(int argc, char *argv[])
@@ -296,6 +290,7 @@ int main(int argc, char *argv[])
 		worker->fin = 0;
 		worker->sem = sem;
 		worker->user_name = user_name;
+		worker->id = worker;
 		sysret = lease_parse(buf, &worker->inf);
 		if (sysret == 0) {
 			free(worker);

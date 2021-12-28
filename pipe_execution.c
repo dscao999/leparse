@@ -145,8 +145,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	*(res+curpos) = 0;
 	sysret = waitpid(subpid, &retv, 0);
 	if (retv != 0)
-		elog("execution failed, command: %s\nresponse: %s\n",
-				cmdline, res);
+		elog("failed command: %s\n---->%s\n", cmdline, res);
 
 exit_30:
 	close(pfdout[0]);

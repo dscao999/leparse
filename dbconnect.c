@@ -57,6 +57,8 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsprintf(db->stmt, fmt, ap);
 	va_end(ap);
+
+	maria_free_result(db);
 	retv = mysql_query(db->dbh, db->stmt);
 	if (unlikely(retv)) {
 		if (likely(strcmp(db->stmt, COMMIT) != 0))
