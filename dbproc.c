@@ -24,7 +24,7 @@ static const int INPLEN = 36;
 static int fetch_osinfo(struct os_info *oinf, const char *ip,
 		char *resbuf, int len)
 {
-	int retv, count;
+	int retv, count, loop;
 	char *curp;
 	FILE *rndin;
 	unsigned long nsec;
@@ -38,12 +38,16 @@ static int fetch_osinfo(struct os_info *oinf, const char *ip,
 		elog("Fatal Error. Cannot open %s\n", rndfile);
 		return 70;
 	}
+	loop = 0;
 	retv = ssh_execute(resbuf, len, ip, "smird", NULL, 0);
 	while (retv == 0 && strlen(resbuf) == 0) {
 		fread(&nsec, sizeof(nsec), 1, rndin);
 		itv.tv_nsec = nsec % 1000000000;
 		op_nanosleep(&itv);
 		retv = ssh_execute(resbuf, len, ip, "smird", NULL, 0);
+		loop += 1;
+		if (loop > 10)
+			break;
 	}
 	if (unlikely(retv != 0 || strlen(resbuf) == 0)) {
 		elog("Cannot fetch os info using \"smird\"\n");
@@ -88,25 +92,17 @@ static inline int ssh_remove_stale_ip(const char *ip)
 
 static int ssh_probe(char *res, int reslen, const struct os_info *oinf)
 {
-	int retv, len;
+	int retv;
 	char *cmdbuf, *msgbuf;
-	char passwd[16], input[48];
-	static const char *fmt = "ssh -l root %s lios_lock_probe.py " \
+	static const char *fmt = "lios_lock_probe.py " \
 				  "--hostname %s --password %s --username %s";
 
-	assert(reslen >= CMDLEN+MSGLEN);
+	assert(reslen >= CMDLEN+INPLEN+MSGLEN);
 	*res = 0;
 	cmdbuf = res;
-	msgbuf = cmdbuf + CMDLEN;
-	len = sprintf(cmdbuf, fmt, oinf->ip, oinf->hostname,
-			oinf->passwd_new, oinf->user);
-	assert(len < CMDLEN);
-	strcpy(passwd, oinf->passwd);
-	strcat(passwd, "\n");
-	strcpy(input, passwd);
-	strcat(input, passwd);
-	strcat(input, passwd);
-	retv = pipe_execute(msgbuf, MSGLEN, cmdbuf, input);
+	msgbuf = cmdbuf + CMDLEN+INPLEN;
+	sprintf(cmdbuf, fmt, oinf->hostname, oinf->passwd_new, oinf->user);
+	retv = ssh_execute(msgbuf, MSGLEN, oinf->ip, cmdbuf, NULL, 0);
 	return retv;
 }
 
@@ -115,22 +111,32 @@ static const char *host_id_changed = "WARNING: REMOTE HOST IDENTIFICATION HAS" \
 
 static int trust_probe(const char *ip)
 {
-	char *cmdbuf, *mesg;
-	int retv;
+	char *mesg;
+	int retv, loop;
+	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
+	static const char *rcmd = "test true";
 
-	cmdbuf = malloc(CMDLEN+MSGLEN);
-	if (!cmdbuf) {
+	mesg = malloc(MSGLEN);
+	if (!mesg) {
 		elog("Out of Memory\n");
 		exit(100);
 	}
-	mesg = cmdbuf + CMDLEN;
-	sprintf(cmdbuf, "ssh -o BatchMode=Yes -l root %s pwd", ip);
-	retv = pipe_execute(mesg, MSGLEN, cmdbuf, NULL);
+	retv = ssh_execute(mesg, MSGLEN, ip, rcmd, NULL, 0);
 	if (strstr(mesg, host_id_changed)) {
 		ssh_remove_stale_ip(ip);
-		retv = pipe_execute(mesg, MSGLEN, cmdbuf, NULL);
+		retv = ssh_execute(mesg, MSGLEN, ip , rcmd, NULL, 0);
 	}
-	free(cmdbuf);
+	while (retv != 0 && strstr(mesg, "Permission denied") == NULL &&
+			strstr(mesg, "Connection timed out") == NULL) {
+		elog("trust probe %s failed: %s\n", ip, mesg);
+		op_nanosleep(&itv);
+		retv = ssh_execute(mesg, MSGLEN, ip, rcmd, NULL, 0);
+		loop += 1;
+	}
+	if (strstr(mesg, "Connection timed out"))
+		retv = 1024;
+
+	free(mesg);
 	return retv;
 }
 
@@ -300,6 +306,8 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	retv = trust_probe(oinf->ip);
 	if (unlikely(retv == 0))
 		return 10000;
+	if (unlikely(retv == 1024))
+		return retv;
 
 	cmdline = res;
 	input = cmdline + CMDLEN;
@@ -307,7 +315,7 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	sprintf(cmdline, cpyfmt, oinf->passwd, oinf->user, oinf->ip);
 	retv = pipe_execute(mesg, MSGLEN, cmdline, NULL);
 	if (unlikely(retv != 0)) {
-		elog("ssh-copy-id failed: %s\n", mesg);
+		elog("ssh-copy-id failed\n");
 		return retv;
 	}
 	sprintf(cmdline, tstfmt, oinf->user, oinf->ip);
@@ -318,18 +326,21 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	strcat(input, passwd);
 	retv = pipe_execute(mesg, MSGLEN, cmdline, input);
 	if (unlikely(retv != 0))
-		elog("ssh-copy-id failed in copying to root: %s\n", mesg);
+		elog("ssh-copy-id failed in copying to root\n");
 	return retv;
 }
 
 static int reset_default_passwd(struct maria *db, const struct lease_info *inf,
 		char *cmdbuf, int buflen)
 {
-	char *inpbuf, *msgbuf;
+	char *inpbuf, *msgbuf, user[16];
 	const char *tfile = ".ssh/authorized_keys";
 	MYSQL_ROW row;
-	int retv = 0;
+	int retv = 0, cmdlen, inplen;
 
+	cmdlen = 0;
+	inplen = 0;
+	assert(buflen >= CMDLEN+INPLEN+MSGLEN);
 	inpbuf = cmdbuf + CMDLEN;
 	msgbuf = inpbuf + INPLEN;
 	retv = maria_query(db, 1, "show columns from citizen");
@@ -340,27 +351,30 @@ static int reset_default_passwd(struct maria *db, const struct lease_info *inf,
 	row = mysql_fetch_row(db->res);
 	while (row) {
 		if (strcmp(row[0], "admin") == 0) {
-			printf("Admin User: %s\n", row[4]);
+			strcpy(user, row[4]);
+			printf("Admin User: %s\n", user);
+			cmdlen = sprintf(cmdbuf, "passwd %s", user);
 		} else if (strcmp(row[0], "password") == 0) {
 			printf("Default Password: %s\n", row[4]);
+			inplen = sprintf(inpbuf, "%s\n%s\n", row[4], row[4]);
 		}
 		row = mysql_fetch_row(db->res);
 	}
 	maria_free_result(db);
-	return retv;
-/*	sprintf(cmdbuf, "passwd %s", row[0]);
-	sprintf(inpbuf, "%s\n%s\n", row[1], row[1]);
+	if (unlikely(cmdlen == 0 || inplen == 0)) {
+		elog("no default user/password found\n");
+		return 5;
+	}
 	retv = ssh_execute(msgbuf, MSGLEN, inf->ip, cmdbuf, inpbuf, 0);
 	if (unlikely(retv != 0)) {
-		maria_free_result(db);
 		elog("Failed to reset password to default: %s\n", inf->ip);
 		return retv;
 	}
-	sprintf(cmdbuf, "rm -f /home/%s/%s %s", row[0], tfile, tfile);
+	sprintf(cmdbuf, "rm -f /home/%s/%s %s", user, tfile, tfile);
 	retv = ssh_execute(msgbuf, MSGLEN, inf->ip, cmdbuf, NULL, 0);
 	if (unlikely(retv != 0))
 		elog("Failed to remove %s in %s\n", tfile, inf->ip);
-	return retv; */
+	return retv;
 }
 
 int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
@@ -370,14 +384,19 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 	int found, mac2, buflen;
 	MYSQL_ROW row;
 	time_t tm;
-	const char *uuid;
 	struct os_info *oinf;
 	char *buf, *cmdbuf;
 	struct sembuf mop;
 
 	trusted = 0;
-	if (!inf->leave)
-		trusted = trust_probe(inf->ip) == 0;
+	if (!inf->leave) {
+		retv = trust_probe(inf->ip);
+		if (retv == 1024) {
+			elog("client %s unreachable\n", inf->ip);
+			return retv;
+		}
+		trusted = retv == 0;
+	}
 	buflen = CMDLEN+INPLEN+MSGLEN;
 	db = malloc(sizeof(struct maria) + sizeof(struct os_info) + buflen);
 	if (unlikely(!db)) {
@@ -424,42 +443,62 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		elog("select mac/mac2 failed\n");
 		goto exit_20;
 	}
+	char *macadr, *macadr2, *last, *uuid;
+	macadr = buf;
+	macadr2 = buf + 24;
+	last = macadr2 + 24;
+	uuid = last + 16;
+	found = 0;
 	row = mysql_fetch_row(db->res);
 	if (row) {
-		tm = atoll(row[2]);
-		uuid = row[3];
+		found = 1;
+		if (row[0])
+			strcpy(macadr, row[0]);
+		else
+			macadr = NULL;
+		if (row[1])
+			strcpy(macadr2, row[1]);
+		else
+			macadr2 = NULL;
+		if (row[2])
+			strcpy(last, row[2]);
+		else
+			last = NULL;
+		if (row[3])
+			strcpy(uuid, row[3]);
+		else
+			uuid = NULL;
+	}
+	maria_free_result(db);
+	if (found) {
+		tm = atoll(last);
 		if (tm < inf->tm) {
 			mac2 = 0;
-			if (row[1] && strcmp(row[1], inf->mac) == 0)
+			if (macadr2 && strcmp(macadr2, inf->mac) == 0)
 				mac2 = 1;
 			update_citizen(db, inf, mac2, uuid, trusted);
 		}
-		row = mysql_fetch_row(db->res);
-		if (row)
-			elog("Internal logic error: dublicate citizen records.\n");
-		goto exit_30;
+		goto exit_20;
 	}
 	if (unlikely(inf->leave))
-		goto exit_30;
+		goto exit_20;
 
 	if (trusted) {
 		retv = fetch_osinfo(oinf, inf->ip, buf, buflen);
 		if (unlikely(retv))
 			goto exit_20;
+		found = 0;
 		retv = maria_query(db, 1, "select count(*) from citizen where "\
 				"uuid = '%s'", oinf->uuid);
 		if (unlikely(retv)) {
 			elog("Select Failed. UUID: %s\n", oinf->uuid);
-			goto exit_30;
+			goto exit_20;
 		}
 		row = mysql_fetch_row(db->res);
-		if (likely(row && atoi(row[0]) > 0)) {
-			maria_free_result(db);
-			retv = maria_transact(db);
-			if (unlikely(retv != 0)) {
-				elog("Cannot Start Transaction: %s\n", __func__);
-				goto exit_20;
-			}
+		if (likely(row))
+			found = atoi(row[0]);
+		maria_free_result(db);
+		if (found) {
 			retv = maria_query(db, 0, "update citizen set "\
 					"mac2 = '%s', last = %lu, ip2 = '%s' "\
 				      	"where  uuid = '%s'", inf->mac, inf->tm,
@@ -468,21 +507,11 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 				elog("Cannot Set mac2/ip2: %s\n", __func__);
 				goto exit_20;
 			}
-			retv = maria_commit(db);
-			if (unlikely(retv != 0) && verbose)
-				elog("Commit Failed: %s. %s\n",
-						maria_error(db), __func__);
 		} else
 			retv = reset_default_passwd(db, inf, cmdbuf, buflen);
-		goto exit_30;
-	}
-
-	retv = maria_transact(db);
-	if (unlikely(retv != 0)) {
-		elog("Cannot start a db transaction.\n");
-		retv = -retv;
 		goto exit_20;
 	}
+
 	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, last) "\
 			"values ('%s', '%s', %lu, %lu)", inf->mac, inf->ip,
 			inf->tm, inf->tm);
@@ -492,15 +521,14 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 	}
 	retv = maria_query(db, 1, "select hostname, password, hostseq, admin "\
 		       	"from citizen where mac = '%s'", inf->mac);
-	if (retv) {
-		retv = -6;
-		goto exit_20;
-	}
+	if (retv)
+		goto err_exit_delmac;
 	row = mysql_fetch_row(db->res);
 	if (!row) {
 		elog("Internal logic error, no default password.\n");
 		retv = -7;
-		goto exit_30;
+		maria_free_result(db);
+		goto err_exit_delmac;
 	}
 	sprintf(oinf->hostname, "%s%04d", row[0], atoi(row[2]));
 	strcpy(oinf->passwd, row[1]);
@@ -516,7 +544,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		if (unlikely(retv == -1 && errno != EINTR)) {
 			elog("Cannot acquire lock before ssh_copyid: %s\n",
 					strerror(errno));
-			goto exit_20;
+			goto err_exit_delmac;
 		}
 	} while (retv == -1 && errno == EINTR);
 	retv = ssh_copyid(buf, buflen, oinf);
@@ -526,26 +554,28 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		if (retv != 10000) {
 			elog("ssh_copyid failed\n");
 			retv = -8;
-		} else
+		} else {
+			if (verbose)
+				elog("trust relationship established already\n");
 			retv = 0;
-		goto exit_20;
+		}
+		goto err_exit_delmac;
 	}
 	retv = fetch_osinfo(oinf, inf->ip, buf, buflen);
 	if (retv) {
 		elog("Cannot get OS info of %s\n", inf->ip);
-		goto exit_20;
+		goto err_exit_delmac;
 	}
 	retv = ssh_probe(buf, buflen, oinf);
-	if (verbose)
+	if (verbose && buf[0] != 0)
 		elog("%s\n", buf);
 	if (unlikely(retv != 0)) {
 		elog("ssh_probe %s failed\n", oinf->ip);
-		retv = -6;
-		goto exit_20;
+		goto err_exit_delmac;
 	}
 	if (verbose)
-		elog("%s new hostname: %s, new password: '%s'\n", inf->mac,
-			oinf->hostname, oinf->passwd_new);
+		elog("new hostname: %s, new password: '%s' for %s\n",
+				oinf->hostname, oinf->passwd_new, inf->mac);
 	retv = maria_query(db, 0, "update citizen set hostname = '%s', " \
 			"password= '%s', uuid = '%s', serial = '%s' where " \
 			"mac = '%s'", oinf->hostname, oinf->passwd_new,
@@ -553,17 +583,19 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 	if (retv) {
 		elog("Cannot update hostname and password.\n");
 		retv = -7;
-		goto exit_20;
+		goto err_exit_delmac;
 	}
-	retv = maria_commit(db);
-	if (unlikely(retv))
-		elog("Insert new discovery failed: %s\n", maria_error(db));
 
-exit_30:
-	maria_free_result(db);
 exit_20:
 	maria_exit(db);
 exit_10:
 	free(db);
 	return retv;
+
+err_exit_delmac:
+	retv = maria_query(db, 0, "delete from citizen where mac = '%'",
+			inf->mac);
+	if (unlikely(retv != 0))
+		elog("Cannot delete new mac record\n");
+	goto exit_20;
 }
