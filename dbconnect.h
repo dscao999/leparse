@@ -32,6 +32,10 @@ static inline int maria_commit(struct maria *db)
 {
 	return maria_query(db, 0, COMMIT);
 }
+static inline int maria_rollback(struct maria *db)
+{
+	return mysql_rollback(db->dbh);
+}
 static inline const char * maria_error(struct maria *db)
 {
 	return mysql_error(db->dbh);

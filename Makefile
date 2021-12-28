@@ -26,7 +26,7 @@ dirnot:	inotify_dir.o
 plidm: ping_lidm.o
 	$(LINK.o) $^ -o $@
 
-release: plidm
+release: plidm lecho
 
 release: CFLAGS += -O2
 release: LDFLAGS += -O1
