@@ -12,6 +12,8 @@
 #include "random_passwd.h"
 #include "pipe_execution.h"
 
+int verbose = 0;
+
 int main(int argc, char *argv[])
 {
 	int c, fin, reslen, retv;

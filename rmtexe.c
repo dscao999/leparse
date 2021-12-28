@@ -5,7 +5,7 @@
 #include "miscs.h"
 #include "pipe_execution.h"
 
-static int verbose = 0;
+int verbose = 0;
 
 int main(int argc, char *argv[])
 {
@@ -56,6 +56,7 @@ int main(int argc, char *argv[])
 		elog("The executable file must be specified.\n");
 		return 2;
 	}
+	elog_init();
 	
 	reslen = 1024;
 	res = malloc(reslen+1024);
