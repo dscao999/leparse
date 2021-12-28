@@ -129,16 +129,17 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 				curpos = 0;
 			}
 			if ((pfd.revents & POLLIN) != 0) {
-				numb = read(fdin, res+curpos, lenrem);
 				pfd.revents ^= POLLIN;
+				numb = read(fdin, res+curpos, lenrem);
 				if (numb > 0) {
 					curpos += numb;
 					lenrem -= numb;
 				}
 			}
-			if (pfd.revents & (~(POLLHUP|POLLNVAL)))
-				elog("pipe failed: %X, %s\n",
-						pfd.revents, cmdline);
+			if ((pfd.revents & (POLLHUP|POLLNVAL)) && verbose) {
+				elog("pipe failed: %X, %s\n", pfd.revents,
+						cmdline);
+			}
 		}
 	} while (pfd.revents == 0 || numb > 0);
 	*(res+curpos) = 0;
@@ -208,7 +209,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			goto exit_10;
 		}
 		sprintf(cmdexe, cpfmt, cmdfile, ip);
-		retv = pipe_execute(res, reslen, cmdexe, input);
+		retv = pipe_execute(res, reslen, cmdexe, NULL);
 		if (retv != 0) {
 			elog("%s failed: %s\n", cmdexe, res);
 			goto exit_10;
