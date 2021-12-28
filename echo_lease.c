@@ -40,32 +40,6 @@ static inline int worker_equal(const struct thread_worker *w1,
 			 (w1->inf.leave == w2->inf.leave);
 }
 
-static inline void time_add(struct timespec *ltm, const struct timespec *rtm)
-{
-	ltm->tv_sec += rtm->tv_sec;
-	ltm->tv_nsec += rtm->tv_nsec;
-	if (ltm->tv_nsec > 999999999l) {
-		ltm->tv_sec += 1;
-		ltm->tv_nsec -= 1000000l;
-	}
-}
-
-static void op_nanosleep(const struct timespec *tm)
-{
-	struct timespec abstm;
-	int sysret;
-
-	clock_gettime(CLOCK_MONOTONIC_COARSE, &abstm);
-	time_add(&abstm, tm);
-	do {
-		sysret = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &abstm, NULL);
-		if (sysret == -1 && errno != EINTR) {
-			elog("clock_nanosleep failed: %s\n", strerror(errno));
-			break;
-		}
-	} while (sysret == -1);
-}
-
 static volatile int global_exit = 0;
 
 void sig_handler(int sig)
@@ -86,7 +60,7 @@ void * process_echo(void *dat)
 	if (retv)
 		elog("Somethin wrong in lease processing.\n");
 	tm = time(NULL);
-	while (tm - me->inf.tm < 3) {
+	while (tm - me->inf.tm < 4) {
 		op_nanosleep(&itv);
 		tm = time(NULL);
 	}
