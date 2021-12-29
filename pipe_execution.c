@@ -10,6 +10,9 @@
 #include "miscs.h"
 #include "pipe_execution.h"
 
+#define CMDLEN 512
+#define MSGLEN 2048
+
 int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 {
 	int sysret, retv, pfdin[2], pfdout[2], idx;
@@ -26,7 +29,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	if (len < 1)
 		return retv;
 	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
-	numargs = 20;
+	numargs = 21;
 	cmdbuf = malloc(cmdlen+sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
 		elog("Out of Memory.\n");
@@ -189,10 +192,9 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		const char *input, int rm)
 {
 	struct stat mst;
-	char *cmdbuf, **args, *curchr, *cmdfile, *cmdexe; 
-	char *lsl;
-	int sysret, retv = -1, cmdlen, numargs, idx;
-	int pntpos, pntlen, len;
+	char *cmdbuf, *cmdfile, *cmd, *tmpres;
+	char *lsl, *bsl;
+	int sysret, retv = -1, len;
 	static const char *cpfmt = "scp -o BatchMode=yes %s root@%s:";
 	static const char *exfmt = "ssh -o BatchMode=yes -l root %s ./%s";
 	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s %s";
@@ -200,31 +202,25 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 
 	if (!cmdline)
 		return retv;
-	len = strlen(cmdline);
-	if (len < 1)
-		return retv;
-	numargs = 20;
-	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
-	cmdbuf = malloc(2*cmdlen + sizeof(char *)*numargs + 128);
+	cmdbuf = malloc(CMDLEN+MSGLEN+128);
 	if (!cmdbuf) {
-		elog("Out of Memory.\n");
-		return -100;
+		elog("Out of Memory\n");
+		return 100;
 	}
-	args = (char **)(cmdbuf + cmdlen);
-	cmdexe = (char *)(args + numargs);
-	strcpy(cmdbuf, cmdline);
-	curchr = strtok(cmdbuf, " ");
-	idx = 0;
-	while (curchr) {
-		args[idx++] = curchr;
-		curchr = strtok(NULL, " ");
-	}
-	args[idx] = curchr;
+	tmpres = cmdbuf + CMDLEN;
+	cmdfile = tmpres + MSGLEN;
 
-	pntpos = 0;
-	cmdfile = args[0];
+	bsl = strchr(cmdline, ' ');
+	if (bsl)
+		len = bsl - cmdline;
+	else
+		len = strlen(cmdline);
+	strncpy(cmdfile, cmdline, len);
+	cmdfile[len] = 0;
+	cmd = cmdfile;
 	lsl = strrchr(cmdfile, '/');
 	if (lsl) {
+		cmd = lsl + 1;
 		sysret = stat(cmdfile, &mst);
 		if (sysret == -1) {
 			elog("No such file %s: %s\n", cmdfile,
@@ -232,29 +228,27 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			retv = -errno;
 			goto exit_10;
 		}
-		sprintf(cmdexe, cpfmt, cmdfile, ip);
-		retv = pipe_execute(res, reslen, cmdexe, NULL);
-		if (unlikely(retv != 0))
+		sprintf(cmdbuf, cpfmt, cmdfile, ip);
+		retv = pipe_execute(res, reslen, cmdbuf, NULL);
+		if (unlikely(retv != 0)) {
+			elog("ssh copy failed: %s\n", cmdfile);
 			goto exit_10;
-		args[0] = lsl + 1;
-		pntlen = sprintf(cmdexe, exfmt, ip, args[0]);
-		pntpos += pntlen;
-	} else {
-		pntlen = sprintf(cmdexe, e0fmt, ip, args[0]);
-		pntpos += pntlen;
-	}
-	for (idx = 1; args[idx]; idx++) {
-		pntlen = sprintf(cmdexe+pntpos, " %s", args[idx]);
-		pntpos += pntlen;
-	}
-	retv = pipe_execute(res, reslen, cmdexe, input);
+		}
+		len = sprintf(cmdbuf, exfmt, ip, cmd);
+	} else
+		len = sprintf(cmdbuf, e0fmt, ip, cmd);
+	if (bsl)
+		sprintf(cmdbuf+len, "%s", bsl);
+	retv = pipe_execute(res, reslen, cmdbuf, input);
 	if (unlikely(retv != 0))
 		goto exit_10;
 	if (!rm || !lsl)
 		goto exit_10;
 
-	sprintf(cmdexe, rmfmt, ip, args[0]);
-	retv = pipe_execute(cmdbuf, cmdlen, cmdexe, NULL);
+	sprintf(cmdbuf, rmfmt, ip, cmd);
+	retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
+	if (unlikely(retv != 0))
+		elog("Cannot remove file %s at %s-->\n", cmd, ip, tmpres);
 
 exit_10:
 	free(cmdbuf);
