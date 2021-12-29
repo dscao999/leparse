@@ -18,8 +18,8 @@
 #include "random_passwd.h"
 
 static const int CMDLEN = 512;
-static const int MSGLEN = 1500;
-static const int INPLEN = 36;
+static const int MSGLEN = 2048;
+static const int INPLEN = 128;
 
 static int fetch_osinfo(struct os_info *oinf, const char *ip,
 		char *resbuf, int len)
@@ -140,158 +140,87 @@ static int trust_probe(const char *ip)
 	return retv;
 }
 
+static int inctries(struct maria *db, const struct lease_info *inf)
+{
+	int retv, tries;
+	MYSQL_ROW row;
+
+	retv = maria_query(db, 1, "select tries from citizen " \
+			"where mac = '%s'", inf->mac);
+	if (unlikely(retv != 0)) {
+		elog("DB query error for 'tries': %s\n", inf->mac);
+		return retv;
+	}
+	tries = -1;
+	row = mysql_fetch_row(db->res);
+	if (likely(row))
+		tries = atoi(row[0]);
+	maria_free_result(db);
+	if (unlikely(tries == -1)) {
+		elog("Internal Error. Search 'tries' failed: %s\n", inf->mac);
+		return 9;
+	}
+	tries += 1;
+	if (tries > 5) {
+		elog("Maximu tries to manange %s failed. Move to barbarian\n",
+				inf->mac);
+		retv = maria_query(db, 0, "delete from citizen " \
+				"where mac = '%s'", inf->mac);
+		if (unlikely(retv))
+			elog("failed to delete unmanaged mac from database\n");
+	} else {
+		retv = maria_query(db, 0, "update citizen set tries " \
+				"= %d where mac = '%s'", tries, inf->mac);
+		if (retv)
+			elog("update tries failed for '%s'\n", inf->mac);
+	}
+	if (verbose)
+		elog("%d time to manange %s failed.\n",
+				tries, inf->mac);
+	return retv;
+}
+
 static int update_citizen(struct maria *db, const struct lease_info *inf,
 		int mac2, const char *uuid, int trusted)
 {
-	int retv = 0, tries, buflen;
-	char *mesg = NULL;
-	struct os_info oinf;
-	MYSQL_ROW row;
+	int retv;
 	unsigned long tm;
 
 	if (!trusted && !inf->leave) {
+		/* mac already in database, trust not build */
 		if (uuid) {
 			retv = maria_query(db, 0, "delete from citizen " \
 					"where mac = '%s' or mac2 = '%s'", \
 					inf->mac, inf->mac);
 			return retv;
 		}
-		retv = maria_query(db, 1, "select tries from citizen " \
-				"where mac = '%s'", inf->mac);
-		if (unlikely(retv != 0)) {
-			elog("DB query error for 'tries': %s\n", inf->mac);
-			return retv;
-		}
-		row = mysql_fetch_row(db->res);
-		if (unlikely(!row)) {
-			elog("Internal logic error. search 'tries' failed for %s\n",
-					inf->mac);
-			maria_free_result(db);
-			return retv;
-		}
-		tries = atoi(row[0]);
-		maria_free_result(db);
-		tries += 1;
-		if (tries > 5) {
-			elog("Maximu tries to manange %s failed. " \
-					"Move to barbarian\n", inf->mac);
-			retv = maria_transact(db);
-			if (unlikely(retv))
-				return retv;
-			retv = maria_query(db, 0, "insert into barbarian " \
-					"(mac) values ('%s')", inf->mac);
-			if (unlikely(retv))
-				return retv;
-			retv = maria_query(db, 0, "delete from citizen " \
-					"where mac = '%s'", inf->mac);
-			if (unlikely(retv))
-				return retv;
-			retv = maria_commit(db);
-			if (unlikely(retv))
-				elog("Commit failed. Insertion into barbarian:"\
-					       	"%s\n", maria_error(db));
-		} else {
-			retv = maria_query(db, 0, "update citizen set tries " \
-					"= %d where mac = '%s'", tries, inf->mac);
-			if (retv)
-				elog("Cannot set failed tries for '%s'\n",
-						inf->mac);
-		}
-		if (verbose)
-			elog("%d time to manange %s failed.\n",
-					tries, inf->mac);
+
+		retv = inctries(db, inf);
 		return retv;
 	}
 
-	buflen = CMDLEN+INPLEN+MSGLEN;
-	mesg = malloc(buflen);
-	if (!mesg) {
-		elog("Out of Memory\n");
-		return -ENOMEM;
-	}
-	memset(&oinf, 0, sizeof(oinf));
+	/* mac already in database, trust exists */
 	retv = 0;
 	tm = inf->tm;
 	if (inf->leave)
 		tm = 0;
 	if (mac2) {
 		assert(uuid != NULL);
-		retv = maria_transact(db);
-		if (unlikely(retv != 0)) {
-			elog("Cannot start transaction for update mac2\n");
-			goto exit_10;
-		}
 		retv = maria_query(db, 0, "update citizen set last = %lu, " \
-				"ip2 = '%s' where mac2 = '%s'",
-				(unsigned long)tm, inf->ip, inf->mac);
+				"ip2 = '%s' where mac2 = '%s'", tm, inf->ip,
+				inf->mac);
 		if (unlikely(retv))
 			elog("Cannot update citizen mac2: %s, ip: %s.\n",
 					inf->mac, inf->ip);
-		retv = maria_commit(db);
-		if (unlikely(retv != 0 && verbose))
-			elog("Commit update mac2 fail: %s\n", maria_error(db));
 	} else if (uuid) {
-		retv = maria_transact(db);
-		if (unlikely(retv != 0)) {
-			elog("Cannot start transaction for update mac\n");
-			goto exit_10;
-		}
 		retv = maria_query(db, 0, "update citizen set last = %lu, " \
-			"ip = '%s' where mac = '%s'",
-			(unsigned long)tm, inf->ip, inf->mac);
+				"ip = '%s' where mac = '%s'", tm, inf->ip,
+				inf->mac);
 		if (unlikely(retv))
 			elog("Cannot update citizen mac: %s, ip: %s.\n",
 					inf->mac, inf->ip);
-		retv = maria_commit(db);
-		if (unlikely(retv != 0 && verbose))
-			elog("Commit update mac fail: %s\n", maria_error(db));
-	} else {
-		retv = fetch_osinfo(&oinf, inf->ip, mesg, buflen);
-		if (unlikely(retv != 0)) {
-			elog("Cannot fetch OS info\n");
-			goto exit_10;
-		}
-		retv = maria_query(db, 1, "select count(*) from citizen " \
-				"where uuid = '%s'", oinf.uuid);
-		if (unlikely(retv != 0)) {
-			elog("Cannot query for uuid: %s.\n", oinf.uuid);
-			goto exit_10;
-		}
-		row = mysql_fetch_row(db->res);
-		if (unlikely(!row || atoi(row[0]) == 0)) {
-			elog("Still no such uuid: %s. Wait for next echo\n",
-					oinf.uuid);
-			maria_free_result(db);
-			goto exit_10;
-		}
-		maria_free_result(db);
-		retv = maria_transact(db);
-		if (unlikely(retv)) {
-			elog("Cannot start a transaction\n");
-			goto exit_10;
-		}
-		retv = maria_query(db, 0, "update citizen set mac2 = '%s', " \
-				"ip2 = '%s', last = %lu where uuid = '%s'", 
-				inf->mac, inf->ip, tm, oinf.uuid);
-		if (unlikely(retv)) {
-			elog("Cannot set citizen mac2 where uuid = %s\n",
-					oinf.uuid);
-			goto exit_10;
-		}
-		retv = maria_query(db, 0, "delete from citizen where mac = " \
-				"'%s'", inf->mac);
-		if (unlikely(retv)) {
-			elog("Cannot delete mac = %s from citizen.\n", inf->mac);
-			goto exit_10;
-		}
-		retv = maria_commit(db);
-		if (unlikely(retv && verbose))
-			elog("Cannot commit set mac2 and ip2: %s\n",
-					maria_error(db));
 	}
 
-exit_10:
-	free(mesg);
 	return retv;
 }
 
@@ -352,10 +281,8 @@ static int reset_default_passwd(struct maria *db, const struct lease_info *inf,
 	while (row) {
 		if (strcmp(row[0], "admin") == 0) {
 			strcpy(user, row[4]);
-			printf("Admin User: %s\n", user);
 			cmdlen = sprintf(cmdbuf, "passwd %s", user);
 		} else if (strcmp(row[0], "password") == 0) {
-			printf("Default Password: %s\n", row[4]);
 			inplen = sprintf(inpbuf, "%s\n%s\n", row[4], row[4]);
 		}
 		row = mysql_fetch_row(db->res);
@@ -451,6 +378,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 	found = 0;
 	row = mysql_fetch_row(db->res);
 	if (row) {
+		/* mac already in database */
 		found = 1;
 		if (row[0])
 			strcpy(macadr, row[0]);
@@ -468,6 +396,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 			strcpy(uuid, row[3]);
 		else
 			uuid = NULL;
+		assert(last);
 	}
 	maria_free_result(db);
 	if (found) {
@@ -484,6 +413,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		goto exit_20;
 
 	if (trusted) {
+		/* new mac found, trust already exists */
 		retv = fetch_osinfo(oinf, inf->ip, buf, buflen);
 		if (unlikely(retv))
 			goto exit_20;
@@ -491,7 +421,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		retv = maria_query(db, 1, "select count(*) from citizen where "\
 				"uuid = '%s'", oinf->uuid);
 		if (unlikely(retv)) {
-			elog("Select Failed. UUID: %s\n", oinf->uuid);
+			elog("citizen count select failed: %s\n", oinf->uuid);
 			goto exit_20;
 		}
 		row = mysql_fetch_row(db->res);
@@ -512,6 +442,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		goto exit_20;
 	}
 
+	/* new mac found, no trust exists */
 	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, last) "\
 			"values ('%s', '%s', %lu, %lu)", inf->mac, inf->ip,
 			inf->tm, inf->tm);
@@ -524,17 +455,18 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 	if (retv)
 		goto err_exit_delmac;
 	row = mysql_fetch_row(db->res);
-	if (!row) {
+	if (likely(row)) {
+		sprintf(oinf->hostname, "%s%04d", row[0], atoi(row[2]));
+		strcpy(oinf->passwd, row[1]);
+		strcpy(oinf->user, row[3]);
+		random_passwd(oinf->passwd_new);
+	}
+	maria_free_result(db);
+	if (unlikely(!row)) {
 		elog("Internal logic error, no default password.\n");
 		retv = -7;
-		maria_free_result(db);
 		goto err_exit_delmac;
 	}
-	sprintf(oinf->hostname, "%s%04d", row[0], atoi(row[2]));
-	strcpy(oinf->passwd, row[1]);
-	strcpy(oinf->user, row[3]);
-	random_passwd(oinf->passwd_new);
-	maria_free_result(db);
 
 	mop.sem_num = 0;
 	mop.sem_op = -1;
@@ -556,7 +488,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 			retv = -8;
 		} else {
 			if (verbose)
-				elog("trust relationship established already\n");
+				elog("trust established already\n");
 			retv = 0;
 		}
 		goto err_exit_delmac;
