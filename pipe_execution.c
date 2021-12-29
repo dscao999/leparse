@@ -49,7 +49,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	}
 	curchr = strtok(cmdbuf, " ");
 	strcpy(cmd, curchr);
-	lsl = strrchr(curchr, '/');
+	lsl = strrchr(cmd, '/');
 	idx = 0;
 	while (curchr && idx < numargs - 1) {
 		args[idx++] = curchr;
@@ -77,6 +77,20 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		stderr = fdopen(dup(fdout), "w");
 		close(fdin);
 		close(fdout);
+#ifdef DEBUG_DSCAO
+		FILE *log;
+		char *arg;
+		log = fopen("/tmp/exec.log", "ab");
+		fprintf(log, "cmd: %s | %s\n", cmd, cmdline);
+		idx = 0;
+		arg = args[0];
+		while (arg) {
+			fprintf(log, "#%s", arg);
+			arg = args[++idx];
+		}
+		fprintf(log, "\n");
+		fclose(log);
+#endif /* DEBUG_DSCAO */
 		if (lsl)
 			sysret = execv(cmd, args);
 		else
@@ -118,7 +132,6 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	lenrem = reslen - 1;
 	curpos = 0;
 	do {
-		numb = 0;
 		pfd.revents = 0;
 		sysret = poll(&pfd, 1, 200);
 		if (sysret == 1) {
@@ -129,23 +142,35 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 				curpos = 0;
 			}
 			if ((pfd.revents & POLLIN) != 0) {
-				pfd.revents ^= POLLIN;
 				numb = read(fdin, res+curpos, lenrem);
 				if (numb > 0) {
 					curpos += numb;
 					lenrem -= numb;
 				}
 			}
-			if ((pfd.revents & (POLLHUP|POLLNVAL)) && verbose) {
-				elog("pipe failed: %X, %s\n", pfd.revents,
-						cmdline);
+		}
+		sysret = waitpid(subpid, &retv, WNOHANG);
+	} while (sysret == 0);
+	pfd.revents = 0;
+	sysret = poll(&pfd, 1, 0);
+	if (sysret > 0 && (pfd.revents & POLLIN) != 0) {
+		if (lenrem == 0) {
+			elog("Warning: command %s results overflow.\n",
+					cmdline);
+			lenrem = reslen - 1;
+			curpos = 0;
+		}
+		if ((pfd.revents & POLLIN) != 0) {
+			numb = read(fdin, res+curpos, lenrem);
+			if (numb > 0) {
+				curpos += numb;
+				lenrem -= numb;
 			}
 		}
-	} while (pfd.revents == 0 || numb > 0);
+	}
 	*(res+curpos) = 0;
-	sysret = waitpid(subpid, &retv, 0);
-	if (retv != 0)
-		elog("failed command: %s\n---->%s\n", cmdline, res);
+	if (unlikely(retv != 0))
+		elog("failed command: %s\n--->%s\n", cmdline, res);
 
 exit_30:
 	close(pfdout[0]);
@@ -209,10 +234,8 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		}
 		sprintf(cmdexe, cpfmt, cmdfile, ip);
 		retv = pipe_execute(res, reslen, cmdexe, NULL);
-		if (retv != 0) {
-			elog("%s failed: %s\n", cmdexe, res);
+		if (unlikely(retv != 0))
 			goto exit_10;
-		}
 		args[0] = lsl + 1;
 		pntlen = sprintf(cmdexe, exfmt, ip, args[0]);
 		pntpos += pntlen;
@@ -225,17 +248,13 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		pntpos += pntlen;
 	}
 	retv = pipe_execute(res, reslen, cmdexe, input);
-	if (retv != 0) {
-		elog("%s failed: %s\n", cmdexe, res);
+	if (unlikely(retv != 0))
 		goto exit_10;
-	}
 	if (!rm || !lsl)
 		goto exit_10;
 
 	sprintf(cmdexe, rmfmt, ip, args[0]);
 	retv = pipe_execute(cmdbuf, cmdlen, cmdexe, NULL);
-	if (retv)
-		elog("%s failed: %s\n", cmdexe, cmdbuf);
 
 exit_10:
 	free(cmdbuf);
