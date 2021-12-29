@@ -246,7 +246,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	sem = semget(IPC_PRIVATE, 1, IPC_CREAT|IPC_EXCL|0600);
+	sem = semget(IPC_PRIVATE, 2, IPC_CREAT|IPC_EXCL|0600);
 	if (unlikely(sem == -1)) {
 		elog("Cannot get a semphore set: %s\n", strerror(errno));
 		goto exit_10;
@@ -258,8 +258,9 @@ int main(int argc, char *argv[])
 		unsigned short *array;
 		struct seminfo *__buf;
 	} smset;
-	smset.val = 1;
-	retv = semctl(sem, 0, SETVAL,  smset);
+	unsigned short inv[2] = {1, 1};
+	smset.array = inv;
+	retv = semctl(sem, 0, SETALL,  smset);
 	if (unlikely(retv == -1)) {
 		elog("Cannot set initial semphore: %s\n", strerror(errno));
 		goto exit_20;
@@ -306,7 +307,7 @@ int main(int argc, char *argv[])
 		}
 		if (&wentry->lst != &threads) {
 			free(worker);
-			printf("Identical lease ignored\n");
+			printf("duplicate echo ignored\n");
 			continue;
 		}
 		while (w_count >= numcpus) {

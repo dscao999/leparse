@@ -22,36 +22,20 @@ static const int MSGLEN = 2048;
 static const int INPLEN = 128;
 
 static int fetch_osinfo(struct os_info *oinf, const char *ip,
-		char *resbuf, int len)
+		char *resbuf, int reslen)
 {
-	int retv, count, loop;
+	int retv, count, len;
 	char *curp;
-	FILE *rndin;
-	unsigned long nsec;
-	struct timespec itv;
 	static const char *splits = ":\n";
-	static const char *rndfile = "/dev/urandom";
 
-	itv.tv_sec = 0;
-	rndin = fopen(rndfile, "rb");
-	if (unlikely(rndin == NULL)) {
-		elog("Fatal Error. Cannot open %s\n", rndfile);
-		return 70;
-	}
-	loop = 0;
-	retv = ssh_execute(resbuf, len, ip, "smird", NULL, 0);
-	while (retv == 0 && strlen(resbuf) == 0) {
-		fread(&nsec, sizeof(nsec), 1, rndin);
-		itv.tv_nsec = nsec % 1000000000;
-		op_nanosleep(&itv);
-		retv = ssh_execute(resbuf, len, ip, "smird", NULL, 0);
-		loop += 1;
-		if (loop > 10)
-			break;
-	}
-	if (unlikely(retv != 0 || strlen(resbuf) == 0)) {
-		elog("Cannot fetch os info using \"smird\"\n");
-		return 71;
+	retv = ssh_execute(resbuf, reslen, ip, "smird", NULL, 0);
+	len = strlen(resbuf);
+	if (unlikely(retv != 0 || len == 0)) {
+		elog("Cannot fetch os info using \"smird\". retv:%d, len:%d\n",\
+				retv, len);
+		if (len == 0)
+			retv = 71;
+		return retv;
 	}
 	count = 0;
 	curp = strtok(resbuf, splits);
@@ -308,7 +292,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 {
 	struct maria *db;
 	int retv = 0, trusted;
-	int found, mac2, buflen;
+	int found, mac2, buflen, len;
 	MYSQL_ROW row;
 	time_t tm;
 	struct os_info *oinf;
@@ -414,15 +398,29 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 
 	if (trusted) {
 		/* new mac found, trust already exists */
+		mop.sem_num = 0;
+		mop.sem_op = -1;
+		mop.sem_flg = SEM_UNDO;
+		do {
+			retv = semop(semset, &mop, 1);
+			if (unlikely(retv == -1 && errno != EINTR)) {
+				elog("Cannot acquire lock before " \
+						"reset password: %s\n",
+						strerror(errno));
+				goto exit_20;
+			}
+		} while (retv == -1 && errno == EINTR);
 		retv = fetch_osinfo(oinf, inf->ip, buf, buflen);
-		if (unlikely(retv))
-			goto exit_20;
+		if (unlikely(retv)) {
+			elog("Cannot fetch OS info\n");
+			goto exit_100;
+		}
 		found = 0;
 		retv = maria_query(db, 1, "select count(*) from citizen where "\
 				"uuid = '%s'", oinf->uuid);
 		if (unlikely(retv)) {
 			elog("citizen count select failed: %s\n", oinf->uuid);
-			goto exit_20;
+			goto exit_100;
 		}
 		row = mysql_fetch_row(db->res);
 		if (likely(row))
@@ -433,40 +431,59 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 					"mac2 = '%s', last = %lu, ip2 = '%s' "\
 				      	"where  uuid = '%s'", inf->mac, inf->tm,
 					inf->ip, oinf->uuid);
-			if (unlikely(retv)) {
+			if (unlikely(retv))
 				elog("Cannot Set mac2/ip2: %s\n", __func__);
-				goto exit_20;
-			}
-		} else
+		} else {
 			retv = reset_default_passwd(db, inf, cmdbuf, buflen);
+			if (unlikely(retv != 0))
+				elog("reset_passwd failed\n");
+		}
+exit_100:
+		mop.sem_op = 1;
+		semop(semset, &mop, 1);
 		goto exit_20;
 	}
 
 	/* new mac found, no trust exists */
-	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, last) "\
-			"values ('%s', '%s', %lu, %lu)", inf->mac, inf->ip,
-			inf->tm, inf->tm);
-	if (retv) {
-		retv = -5;
+	unsigned long hseq = 0;
+	retv = maria_query(db, 1, "show columns from citizen");
+	if (unlikely(retv)) {
+		elog("Cannot get column definitions of citizen\n");
 		goto exit_20;
 	}
-	retv = maria_query(db, 1, "select hostname, password, hostseq, admin "\
-		       	"from citizen where mac = '%s'", inf->mac);
-	if (retv)
-		goto err_exit_delmac;
 	row = mysql_fetch_row(db->res);
-	if (likely(row)) {
-		sprintf(oinf->hostname, "%s%04d", row[0], atoi(row[2]));
-		strcpy(oinf->passwd, row[1]);
-		strcpy(oinf->user, row[3]);
-		random_passwd(oinf->passwd_new);
-	}
-	maria_free_result(db);
 	if (unlikely(!row)) {
 		elog("Internal logic error, no default password.\n");
+		maria_free_result(db);
 		retv = -7;
-		goto err_exit_delmac;
+		goto exit_20;
 	}
+	while (row) {
+		if (strcmp(row[0], "admin") == 0)
+			strcpy(oinf->user, row[4]);
+		else if (strcmp(row[0], "password") == 0)
+			strcpy(oinf->passwd, row[4]);
+		else if (strcmp(row[0], "hostname") == 0)
+			strcpy(oinf->hostname, row[4]);
+		row = mysql_fetch_row(db->res);
+	}
+	maria_free_result(db);
+	retv = maria_query(db, 1, "select last_insert_id()");
+	if (unlikely(retv != 0)) {
+		elog("select last_insert_id() failed\n");
+		goto exit_20;
+	}
+	row = mysql_fetch_row(db->res);
+	if (likely(row))
+		hseq = atoll(row[0]);
+	maria_free_result(db);
+	if (unlikely(!row)) {
+		elog("no last_insert_id() exists\n");
+		goto exit_20;
+	}
+	len = strlen(oinf->hostname);
+	sprintf(oinf->hostname+len, "%04lu", hseq+1);
+	random_passwd(oinf->passwd_new);
 
 	mop.sem_num = 0;
 	mop.sem_op = -1;
@@ -476,12 +493,10 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		if (unlikely(retv == -1 && errno != EINTR)) {
 			elog("Cannot acquire lock before ssh_copyid: %s\n",
 					strerror(errno));
-			goto err_exit_delmac;
+			goto exit_20;
 		}
 	} while (retv == -1 && errno == EINTR);
 	retv = ssh_copyid(buf, buflen, oinf);
-	mop.sem_op = 1;
-	semop(semset, &mop, 1);
 	if (unlikely(retv != 0)) {
 		if (retv != 10000) {
 			elog("ssh_copyid failed\n");
@@ -491,43 +506,41 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 				elog("trust established already\n");
 			retv = 0;
 		}
-		goto err_exit_delmac;
+		goto exit_30;
 	}
 	retv = fetch_osinfo(oinf, inf->ip, buf, buflen);
 	if (retv) {
 		elog("Cannot get OS info of %s\n", inf->ip);
-		goto err_exit_delmac;
+		goto exit_30;
 	}
+
 	retv = ssh_probe(buf, buflen, oinf);
 	if (verbose && buf[0] != 0)
 		elog("%s\n", buf);
 	if (unlikely(retv != 0)) {
 		elog("ssh_probe %s failed\n", oinf->ip);
-		goto err_exit_delmac;
+		goto exit_30;
 	}
 	if (verbose)
 		elog("new hostname: %s, new password: '%s' for %s\n",
 				oinf->hostname, oinf->passwd_new, inf->mac);
-	retv = maria_query(db, 0, "update citizen set hostname = '%s', " \
-			"password= '%s', uuid = '%s', serial = '%s' where " \
-			"mac = '%s'", oinf->hostname, oinf->passwd_new,
-			oinf->uuid, oinf->serial, inf->mac);
+	retv = maria_query(db, 0, "insert into citizen (mac, ip, birth, " \
+			"last, hostname, password, uuid, serial) values " \
+			"('%s', '%s', %lu, %lu, '%s', '%s', '%s', '%s')", \
+			inf->mac, inf->ip, inf->tm, inf->tm, oinf->hostname,
+			oinf->passwd_new, oinf->uuid, oinf->serial);
 	if (retv) {
-		elog("Cannot update hostname and password.\n");
+		elog("Cannot insert new record for %s.\n", inf->mac);
 		retv = -7;
-		goto err_exit_delmac;
 	}
+
+exit_30:
+	mop.sem_op = 1;
+	semop(semset, &mop, 1);
 
 exit_20:
 	maria_exit(db);
 exit_10:
 	free(db);
 	return retv;
-
-err_exit_delmac:
-	retv = maria_query(db, 0, "delete from citizen where mac = '%'",
-			inf->mac);
-	if (unlikely(retv != 0))
-		elog("Cannot delete new mac record\n");
-	goto exit_20;
 }

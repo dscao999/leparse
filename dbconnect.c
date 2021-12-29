@@ -95,22 +95,25 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 	maria_free_result(db);
 	retv = mysql_query(db->dbh, db->stmt);
 	if (unlikely(retv)) {
-		if (unlikely(retv != 0) && verbose)
-			elog("DB Statement \"%s\" failed: %s\n", db->stmt,
+		elog("DB Statement \"%s\" failed: %s\n", db->stmt,
 					mysql_error(db->dbh));
 		retv = maria_reconnect(db);
 		if (unlikely(retv != 0)) {
-			elog("DB Reconnection failed\n");
+			elog("DB reconnection failed: %s\n",
+					mysql_error(db->dbh));
 			return retv;
 		}
 		retv = mysql_query(db->dbh, db->stmt);
-		if (unlikely(retv != 0))
-			elog("DB Statement \"%s\" failed again: %s\n", db->stmt,
+		if (unlikely(retv)) {
+			elog("DB Statement \"%s\" again failed: %s\n", db->stmt,
 					mysql_error(db->dbh));
+			return retv;
+		}
 	}
 	if (!fetch)
 		return retv;
 
+	retv = 0;
 	db->res = mysql_store_result(db->dbh);
 	if (unlikely(!db->res)) {
 		elog("Cannto store the query '%s' result set: %s\n",
