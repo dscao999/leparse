@@ -7,6 +7,8 @@ struct maria {
 	MYSQL *dbh;
 	char *stmt;
 	MYSQL_RES *res;
+	char database[16];
+	char username[16];
 };
 #define TRANSACT	"start transaction"
 #define COMMIT		"commit release"
