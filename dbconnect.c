@@ -103,6 +103,10 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 			elog("DB Reconnection failed\n");
 			return retv;
 		}
+		retv = mysql_query(db->dbh, db->stmt);
+		if (unlikely(retv != 0))
+			elog("DB Statement \"%s\" failed again: %s\n", db->stmt,
+					mysql_error(db->dbh));
 	}
 	if (!fetch)
 		return retv;
