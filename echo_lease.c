@@ -320,7 +320,6 @@ int main(int argc, char *argv[])
 		}
 		if (&wentry->lst != &threads) {
 			free(worker);
-			printf("duplicate echo ignored\n");
 			continue;
 		}
 		while (w_count >= numcpus) {
