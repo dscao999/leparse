@@ -1,4 +1,4 @@
-CFLAGS = -g -Wall -D_GNU_SOURCE -std=gnu11 -I$(HOME)/devel/include -DDEBUG_DSCAO
+CFLAGS = -g -Wall -D_GNU_SOURCE -std=gnu11 -I$(HOME)/devel/include
 LDFLAGS = -g -L$(HOME)/devel/lib
 LIBS = -lmiscs -lmariadb
 

@@ -81,25 +81,6 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		stderr = fdopen(dup(fdout), "w");
 		close(fdin);
 		close(fdout);
-#ifdef DEBUG_DSCAO
-		FILE *log;
-		char *arg;
-		int len = 0, cmdlen;
-		log = fopen("/tmp/exec.log", "ab");
-		fprintf(log, "cmd: %s - %s\n", cmd, cmdline);
-		idx = 0;
-		arg = args[0];
-		len = 0;
-		while (arg) {
-			len += strlen(arg) + 1;
-			fprintf(log, "#%s", arg);
-			arg = args[++idx];
-		}
-		cmdlen = strlen(cmdline);
-		fprintf(log, "len compare %d-%d\n", len, cmdlen);
-		fclose(log);
-		assert(len <= cmdlen + 1);
-#endif /* DEBUG_DSCAO */
 		if (lsl)
 			sysret = execv(cmd, args);
 		else

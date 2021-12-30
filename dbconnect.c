@@ -54,35 +54,6 @@ void maria_exit(struct maria *db)
 	free(db->stmt);
 }
 
-static int maria_reconnect(struct maria *db)
-{
-	int retv;
-	MYSQL *sqlhand;
-
-	retv = 0;
-	if (db->res) {
-		mysql_free_result(db->res);
-		db->res = NULL;
-	}
-	mysql_close(db->dbh);
-
-	sqlhand = mysql_init(db->dbh);
-	if (unlikely(!sqlhand)) {
-		elog("maria: Cannot initialize connection handler.\n");
-		retv = -1;
-		return retv;
-	}
-	sqlhand = mysql_real_connect(db->dbh, NULL, db->username, NULL,
-			db->database, 0, NULL, 0);
-	if (unlikely(!sqlhand)) {
-		elog("maria: Cannot connect to database: %s\n", 
-				mysql_error(db->dbh));
-		mysql_close(db->dbh);
-		retv = -2;
-	}
-	return retv;
-}
-
 int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 {
 	int retv;
@@ -97,18 +68,6 @@ int maria_query(struct maria *db, int fetch, const char *fmt, ...)
 	if (unlikely(retv)) {
 		elog("DB Statement \"%s\" failed: %s\n", db->stmt,
 					mysql_error(db->dbh));
-/*		retv = maria_reconnect(db);
-		if (unlikely(retv != 0)) {
-			elog("DB reconnection failed: %s\n",
-					mysql_error(db->dbh));
-			return retv;
-		}
-		retv = mysql_query(db->dbh, db->stmt);
-		if (unlikely(retv)) {
-			elog("DB Statement \"%s\" again failed: %s\n", db->stmt,
-					mysql_error(db->dbh));
-			return retv;
-		}*/
 	} else if (fetch) {
 		db->res = mysql_store_result(db->dbh);
 		if (unlikely(!db->res)) {
