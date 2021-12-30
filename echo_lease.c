@@ -22,6 +22,18 @@
 
 int verbose = 0;
 
+struct post_data {
+	int semset;
+};
+static struct post_data pdata = {.semset = -1};
+
+static void post_processing(int retv, void *arg)
+{
+	struct post_data *data = (struct post_data *)arg;
+	if (data->semset != -1)
+		semctl(data->semset, IPC_RMID, 0);
+}
+
 struct thread_worker {
 	struct lease_info inf;
 	pthread_t thid;
@@ -29,8 +41,8 @@ struct thread_worker {
 	volatile int *w_count;
 	const char *user_name;
 	void *id;
-	int sem;
 	int fin;
+	int semset;
 };
 
 static inline int worker_equal(const struct thread_worker *w1,
@@ -56,7 +68,7 @@ void * process_echo(void *dat)
 	time_t tm;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 
-	retv = dbproc(&me->inf, me->sem, me->user_name);
+	retv = dbproc(&me->inf, pdata.semset, me->user_name);
 	atomic_dec(me->w_count);
 	if (retv)
 		elog("Somethin wrong in lease processing.\n");
@@ -116,7 +128,7 @@ int main(int argc, char *argv[])
 	struct sigaction mact;
 	struct addrinfo hint, *svrinfo;
 	int retv, sock, buflen, fin, c;
-	int numcpus = 0, sysret, sem, len;
+	int numcpus = 0, sysret, len;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
@@ -159,6 +171,7 @@ int main(int argc, char *argv[])
 			assert(0);
 		}
 	} while (fin == 0);
+	on_exit(post_processing, &pdata);
 	if (verbose) {
 		elog("Listening on port: %s\n", port);
 	}
@@ -246,8 +259,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	sem = semget(IPC_PRIVATE, 2, IPC_CREAT|IPC_EXCL|0600);
-	if (unlikely(sem == -1)) {
+	pdata.semset = semget(IPC_PRIVATE, 2, IPC_CREAT|IPC_EXCL|0600);
+	if (unlikely(pdata.semset == -1)) {
 		elog("Cannot get a semphore set: %s\n", strerror(errno));
 		goto exit_10;
 	}
@@ -260,7 +273,7 @@ int main(int argc, char *argv[])
 	} smset;
 	unsigned short inv[2] = {1, 1};
 	smset.array = inv;
-	retv = semctl(sem, 0, SETALL,  smset);
+	retv = semctl(pdata.semset, 0, SETALL,  smset);
 	if (unlikely(retv == -1)) {
 		elog("Cannot set initial semphore: %s\n", strerror(errno));
 		goto exit_20;
@@ -289,7 +302,7 @@ int main(int argc, char *argv[])
 		}
 		worker->w_count = &w_count;
 		worker->fin = 0;
-		worker->sem = sem;
+		worker->semset = pdata.semset;
 		worker->user_name = user_name;
 		worker->id = worker;
 		sysret = lease_parse(buf, &worker->inf);
@@ -355,7 +368,8 @@ exit_30:
 	elog("exit...\n");
 
 exit_20:
-	semctl(sem, IPC_RMID, 0);
+	semctl(pdata.semset, IPC_RMID, 0);
+	pdata.semset = -1;
 exit_10:
 	free(buf);
 	close(sock);

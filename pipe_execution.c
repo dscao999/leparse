@@ -200,6 +200,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s %s";
 	static const char *rmfmt = "ssh -o BatchMode=yes -l root %s rm ./%s";
 
+	res[0] = 0;
 	if (!cmdline)
 		return retv;
 	cmdbuf = malloc(CMDLEN+MSGLEN+128);
@@ -229,7 +230,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			goto exit_10;
 		}
 		sprintf(cmdbuf, cpfmt, cmdfile, ip);
-		retv = pipe_execute(res, reslen, cmdbuf, NULL);
+		retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
 		if (unlikely(retv != 0)) {
 			elog("ssh copy failed: %s\n", cmdfile);
 			goto exit_10;
