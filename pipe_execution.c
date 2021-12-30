@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <assert.h>
 #include "miscs.h"
 #include "pipe_execution.h"
 
@@ -17,7 +18,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 {
 	int sysret, retv, pfdin[2], pfdout[2], idx;
 	int fdout, fdin, numargs, cmdlen, inlen;
-	char *curchr, **args, *cmdbuf, *cmd, *lsl;
+	char *curchr, **args, *cmdbuf, *cmd, *lsl, *saveptr;
 	const char *ln, *lnmark;
 	pid_t subpid;
 	int numb, len;
@@ -50,13 +51,13 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		retv = -errno;
 		goto exit_20;
 	}
-	curchr = strtok(cmdbuf, " ");
+	curchr = strtok_r(cmdbuf, " ", &saveptr);
 	strcpy(cmd, curchr);
 	lsl = strrchr(cmd, '/');
 	idx = 0;
 	while (curchr && idx < numargs - 1) {
 		args[idx++] = curchr;
-		curchr = strtok(NULL, " ");
+		curchr = strtok_r(NULL, " ", &saveptr);
 	}
 	args[idx] = NULL;
 	if (lsl)
@@ -83,16 +84,21 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 #ifdef DEBUG_DSCAO
 		FILE *log;
 		char *arg;
+		int len = 0, cmdlen;
 		log = fopen("/tmp/exec.log", "ab");
-		fprintf(log, "cmd: %s | %s\n", cmd, cmdline);
+		fprintf(log, "cmd: %s - %s\n", cmd, cmdline);
 		idx = 0;
 		arg = args[0];
+		len = 0;
 		while (arg) {
+			len += strlen(arg) + 1;
 			fprintf(log, "#%s", arg);
 			arg = args[++idx];
 		}
-		fprintf(log, "\n");
+		cmdlen = strlen(cmdline);
+		fprintf(log, "len compare %d-%d\n", len, cmdlen);
 		fclose(log);
+		assert(len <= cmdlen + 1);
 #endif /* DEBUG_DSCAO */
 		if (lsl)
 			sysret = execv(cmd, args);
@@ -173,7 +179,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	}
 	*(res+curpos) = 0;
 	if (unlikely(retv != 0))
-		elog("failed command: %s\n--->%s\n", cmdline, res);
+		elog("failed command: code %X %s\n--->%s\n", retv, cmdline, res);
 
 exit_30:
 	close(pfdout[0]);

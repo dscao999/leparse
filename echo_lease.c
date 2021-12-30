@@ -83,7 +83,7 @@ void * process_echo(void *dat)
 
 static int lease_parse(const char *info, struct lease_info *linfo)
 {
-	char *buf, *tok, *ip, *start, *mac;
+	char *buf, *tok, *ip, *start, *mac, *saveptr;
 	int retv = 0, len, leave;
 	long tm;
 	static const char *token = " ;{}";
@@ -95,23 +95,23 @@ static int lease_parse(const char *info, struct lease_info *linfo)
 		return -1;
 	}
 	strcpy(buf, info);
-	tok = strtok(buf, token);
+	tok = strtok_r(buf, token, &saveptr);
 	leave = strcmp(tok, "leave") == 0;
 	if (strcmp(tok, "lease") != 0 && !leave)
 		goto exit_10;
-	ip = strtok(NULL, token);
-	tok = strtok(NULL, token);
+	ip = strtok_r(NULL, token, &saveptr);
+	tok = strtok_r(NULL, token, &saveptr);
 	if (strcmp(tok, "start") != 0)
 		goto exit_10;
-	start = strtok(NULL, token);
+	start = strtok_r(NULL, token, &saveptr);
 	tm = atoll(start);
-	tok = strtok(NULL, token);
+	tok = strtok_r(NULL, token, &saveptr);
 	if (strcmp(tok, "hardware") != 0)
 		goto exit_10;
-	tok = strtok(NULL, token);
+	tok = strtok_r(NULL, token, &saveptr);
 	if (strcmp(tok, "ethernet") != 0)
 		goto exit_10;
-	mac = strtok(NULL, token);
+	mac = strtok_r(NULL, token, &saveptr);
 	linfo->tm = tm;
 	linfo->leave = leave;
 	strcpy(linfo->mac, mac);

@@ -25,7 +25,7 @@ static int fetch_osinfo(struct os_info *oinf, const char *ip,
 		char *resbuf, int reslen)
 {
 	int retv, count, len;
-	char *curp;
+	char *curp, *saveptr;
 	static const char *splits = ":\n";
 
 	retv = ssh_execute(resbuf, reslen, ip, "smird", NULL, 0);
@@ -38,18 +38,18 @@ static int fetch_osinfo(struct os_info *oinf, const char *ip,
 		return retv;
 	}
 	count = 0;
-	curp = strtok(resbuf, splits);
+	curp = strtok_r(resbuf, splits, &saveptr);
 	while (curp && count < 2) {
 		if (strcmp(curp, "UUID") == 0) {
-			curp = strtok(NULL, splits);
+			curp = strtok_r(NULL, splits, &saveptr);
 			strcpy(oinf->uuid, curp+1);
 			count += 1;
 		} else if (strcmp(curp, "Serial Number") == 0) {
-			curp = strtok(NULL, splits);
+			curp = strtok_r(NULL, splits, &saveptr);
 			strcpy(oinf->serial, curp+1);
 			count += 1;
 		}
-		curp = strtok(NULL, ":\n");
+		curp = strtok_r(NULL, ":\n", &saveptr);
 	}
 	return retv;
 }
@@ -145,7 +145,7 @@ static int try_and_log(struct maria *db, const struct lease_info *inf)
 		return 9;
 	}
 	tries += 1;
-	if (tries > 5) {
+	if (tries > 3) {
 		elog("%d tries to add %s failed. Deleted\n", tries, inf->mac);
 		retv = maria_query(db, 0, "delete from citizen where mac" \
 				" = '%s' or mac2 = '%s'", inf->mac, inf->mac);

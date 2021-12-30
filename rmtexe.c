@@ -61,9 +61,10 @@ int main(int argc, char *argv[])
 	reslen = 1024;
 	res = malloc(reslen+1024);
 	cmdline = res + reslen;
-	pntpos = 0;
+	pntlen = sprintf(cmdline, "%s", argv[optind]);
+	pntpos = pntlen;
 	for (i = optind; i < argc; i++) {
-		pntlen = sprintf(cmdline+pntpos, "%s ", argv[i]);
+		pntlen = sprintf(cmdline+pntpos, " %s", argv[i]);
 		pntpos += pntlen;
 	}
 	retv = ssh_execute(res, reslen, peer, cmdline, NULL, rm);
