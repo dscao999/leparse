@@ -164,8 +164,33 @@ static int try_and_log(struct maria *db, const struct lease_info *inf)
 	return retv;
 }
 
+static int sem_acquire(int semset, int semnum)
+{
+	int retv;
+	struct sembuf mop;
+
+	mop.sem_num = semnum;
+	mop.sem_op = -1;
+	mop.sem_flg = SEM_UNDO;
+	do {
+		retv = semop(semset, &mop, 1);
+		if (unlikely(retv == -1 && errno != EINTR))
+			break;
+	} while (retv == -1 && errno == EINTR);
+	return retv;
+}
+
+static inline int sem_release(int semset, int semnum)
+{
+	struct sembuf mop;
+
+	mop.sem_num = semnum;
+	mop.sem_op = 1;
+	return semop(semset, &mop, 1);
+}
+
 static int update_citizen(struct maria *db, const struct lease_info *inf,
-		int mac2, const char *uuid, int trusted)
+		int mac2, const char *uuid, int trusted, int semset)
 {
 	int retv;
 	unsigned long tm;
@@ -177,7 +202,15 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 			elog("Cannot update citizen for %s, leave\n", inf->mac);
 	} else if (!trusted) {
 		/* mac already in database, trust not build */
-		retv = try_and_log(db, inf);
+		retv = sem_acquire(semset, 1);
+		if (unlikely(retv))
+			elog("Failed to acquire semphore for update tries\n");
+		else {
+			retv = try_and_log(db, inf);
+			if (unlikely(retv))
+				elog("Try and Log failed: %s\n", inf->mac);
+			sem_release(semset, 1);
+		}
 	} else {
 	/* mac already in database, trust exists */
 		assert(uuid != NULL);
@@ -279,31 +312,6 @@ static int reset_default_passwd(struct maria *db, const struct lease_info *inf,
 	if (unlikely(retv != 0))
 		elog("Failed to remove %s in %s\n", tfile, inf->ip);
 	return retv;
-}
-
-static int sem_acquire(int semset, int semnum)
-{
-	int retv;
-	struct sembuf mop;
-
-	mop.sem_num = semnum;
-	mop.sem_op = -1;
-	mop.sem_flg = SEM_UNDO;
-	do {
-		retv = semop(semset, &mop, 1);
-		if (unlikely(retv == -1 && errno != EINTR))
-			break;
-	} while (retv == -1 && errno == EINTR);
-	return retv;
-}
-
-static inline int sem_release(int semset, int semnum)
-{
-	struct sembuf mop;
-
-	mop.sem_num = semnum;
-	mop.sem_op = 1;
-	return semop(semset, &mop, 1);
 }
 
 static int insert_trusted(struct os_info *oinf, const struct lease_info *inf,
@@ -532,7 +540,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 			mac2 = 0;
 			if (macadr2 && strcmp(macadr2, inf->mac) == 0)
 				mac2 = 1;
-			update_citizen(db, inf, mac2, uuid, trusted);
+			update_citizen(db, inf, mac2, uuid, trusted, semset);
 		}
 		goto exit_20;
 	}
