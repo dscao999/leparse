@@ -61,8 +61,7 @@ int main(int argc, char *argv[])
 	reslen = 1024;
 	res = malloc(reslen+1024);
 	cmdline = res + reslen;
-	pntlen = sprintf(cmdline, "%s", argv[optind]);
-	pntpos = pntlen;
+	pntpos = 0;
 	for (i = optind; i < argc; i++) {
 		pntlen = sprintf(cmdline+pntpos, " %s", argv[i]);
 		pntpos += pntlen;
