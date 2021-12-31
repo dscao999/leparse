@@ -183,8 +183,8 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	char *lsl, *bsl;
 	int sysret, retv = -1, len;
 	static const char *cpfmt = "scp -o BatchMode=yes %s root@%s:";
-	static const char *exfmt = "ssh -o BatchMode=yes -l root %s ./%s";
-	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s %s";
+	static const char *exfmt = "ssh -o BatchMode=yes -l root %s -- ./%s";
+	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s -- %s";
 	static const char *rmfmt = "ssh -o BatchMode=yes -l root %s rm ./%s";
 
 	res[0] = 0;

@@ -69,8 +69,7 @@ int main(int argc, char *argv[])
 	retv = ssh_execute(res, reslen, peer, cmdline, NULL, rm);
 	if (retv != 0)
 		elog("Remote execution failed.\n");
-	if (verbose)
-		elog("%s\n", res);
+	elog("%s\n", res);
 	free(res);
 	return retv;
 }
