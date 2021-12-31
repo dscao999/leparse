@@ -124,46 +124,6 @@ static int trust_probe(const char *ip)
 	return retv;
 }
 
-static int try_and_log(struct maria *db, const struct lease_info *inf)
-{
-	int retv, tries;
-	MYSQL_ROW row;
-
-	retv = maria_query(db, 1, "select tries from citizen where " \
-			"mac = '%s' or mac2 = '%s'", inf->mac, inf->mac);
-	if (unlikely(retv != 0)) {
-		elog("DB query error for 'tries': %s\n", inf->mac);
-		return retv;
-	}
-	tries = -1;
-	row = mysql_fetch_row(db->res);
-	if (likely(row && row[0]))
-		tries = atoi(row[0]);
-	maria_free_result(db);
-	if (unlikely(tries == -1)) {
-		elog("Internal Error. Search 'tries' failed: %s\n", inf->mac);
-		return 9;
-	}
-	tries += 1;
-	if (tries > 3) {
-		elog("%d tries to add %s failed. Deleted\n", tries, inf->mac);
-		retv = maria_query(db, 0, "delete from citizen where mac" \
-				" = '%s' or mac2 = '%s'", inf->mac, inf->mac);
-		if (unlikely(retv))
-			elog("failed to delete unmanaged mac from citizen\n");
-	} else {
-		retv = maria_query(db, 0, "update citizen set tries  = %d " \
-				"where mac = '%s' or mac2 = '%s'",
-				tries, inf->mac, inf->mac);
-		if (retv)
-			elog("update tries failed for '%s'\n", inf->mac);
-	}
-	if (verbose)
-		elog("%d time to manange %s failed.\n",
-				tries, inf->mac);
-	return retv;
-}
-
 static int sem_acquire(int semset, int semnum)
 {
 	int retv;
@@ -189,46 +149,95 @@ static inline int sem_release(int semset, int semnum)
 	return semop(semset, &mop, 1);
 }
 
+static int try_and_log(struct maria *db, const struct lease_info *inf,
+		int semset)
+{
+	int retv, tries;
+	MYSQL_ROW row;
+
+	retv = sem_acquire(semset, 1);
+	if (unlikely(retv)) {
+		elog("Failed to acquire semphore for update tries\n");
+		return retv;
+	}
+	retv = maria_query(db, 1, "select tries from citizen where " \
+			"mac = '%s' or mac2 = '%s'", inf->mac, inf->mac);
+	if (unlikely(retv != 0)) {
+		elog("DB query error for 'tries': %s\n", inf->mac);
+		goto exit_10;
+	}
+	tries = -1;
+	row = mysql_fetch_row(db->res);
+	if (likely(row && row[0]))
+		tries = atoi(row[0]);
+	maria_free_result(db);
+	if (unlikely(tries == -1)) {
+		elog("Internal Error. Search 'tries' failed: %s\n", inf->mac);
+		goto exit_10;
+	}
+	tries += 1;
+	if (tries > 3) {
+		elog("%d tries to add %s failed. Deleted\n", tries, inf->mac);
+		retv = maria_query(db, 0, "delete from citizen where mac" \
+				" = '%s' or mac2 = '%s'", inf->mac, inf->mac);
+		if (unlikely(retv))
+			elog("failed to delete unmanaged mac from citizen\n");
+	} else {
+		retv = maria_query(db, 0, "update citizen set tries  = %d " \
+				"where mac = '%s' or mac2 = '%s'",
+				tries, inf->mac, inf->mac);
+		if (retv)
+			elog("update tries failed for '%s'\n", inf->mac);
+	}
+	if (verbose)
+		elog("%d time to manange %s failed.\n",
+				tries, inf->mac);
+exit_10:
+	sem_release(semset, 1);
+	return retv;
+}
+
+static int update_trusted(struct maria *db, const struct lease_info *inf,
+		int mac2)
+{
+	int retv = 0;
+
+	if (mac2) {
+		retv = maria_query(db, 0, "update citizen set " \
+				"last = %lu, ip2 = '%s' where " \
+				"mac2 = '%s'", inf->tm, inf->ip, inf->mac);
+		if (unlikely(retv))
+			elog("Cannot update citizen mac2 %s, ip %s.\n",
+					inf->mac, inf->ip);
+	} else {
+		retv = maria_query(db, 0, "update citizen set " \
+				"last = %lu, ip = '%s' where " \
+				"mac = '%s'", inf->tm, inf->ip, inf->mac);
+		if (unlikely(retv))
+			elog("Cannot update citizen mac: %s, ip: %s.\n",
+					inf->mac, inf->ip);
+	}
+	return retv;
+}
+
 static int update_citizen(struct maria *db, const struct lease_info *inf,
 		int mac2, const char *uuid, int trusted, int semset)
 {
-	int retv;
-	unsigned long tm;
+	int retv = 0;
 
 	if (inf->leave) {
 		retv = maria_query(db, 0, "update citizen set last = 0 " \
 				"where mac = '%s' or mac2 = '%s'", inf->mac);
 		if (unlikely(retv))
 			elog("Cannot update citizen for %s, leave\n", inf->mac);
-	} else if (!trusted) {
-		/* mac already in database, trust not build */
-		retv = sem_acquire(semset, 1);
-		if (unlikely(retv))
-			elog("Failed to acquire semphore for update tries\n");
-		else {
-			retv = try_and_log(db, inf);
-			if (unlikely(retv))
-				elog("Try and Log failed: %s\n", inf->mac);
-			sem_release(semset, 1);
-		}
 	} else {
-	/* mac already in database, trust exists */
-		assert(uuid != NULL);
-		tm = inf->tm;
-		if (mac2) {
-			retv = maria_query(db, 0, "update citizen set " \
-					"last = %lu, ip2 = '%s' where " \
-					"mac2 = '%s'", tm, inf->ip, inf->mac);
-			if (unlikely(retv))
-				elog("Cannot update citizen mac2 %s, ip %s.\n",
-						inf->mac, inf->ip);
+		if (!trusted) {
+			/* mac already in database, trust not build */
+			retv = try_and_log(db, inf, semset);
 		} else {
-			retv = maria_query(db, 0, "update citizen set " \
-					"last = %lu, ip = '%s' where " \
-					"mac = '%s'", tm, inf->ip, inf->mac);
-			if (unlikely(retv))
-				elog("Cannot update citizen mac: %s, ip: %s.\n",
-						inf->mac, inf->ip);
+			/* mac already in database, trust exists */
+			assert(uuid != NULL);
+			retv = update_trusted(db, inf, mac2);
 		}
 	}
 	return retv;
