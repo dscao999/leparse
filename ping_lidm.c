@@ -46,7 +46,7 @@ static void sockaddr_parse(const struct sockaddr *addr)
 static const char *netdir = "/sys/class/net";
 
 struct idinfo {
-	time_t tmstp;
+	unsigned long tmstp;
 	char iface[16];
 	char ip[24];
 	char mac[24];
@@ -165,7 +165,7 @@ struct idinfo * getinfo(void)
 }
 
 static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
-		int leave)
+		int leave, unsigned long hostid)
 {
 	struct timespec itm, rtm;
 	unsigned long rndsec;
@@ -173,6 +173,8 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 	int len, sysret;
 	static const char *const lease = "lease";
 	static const char *const shutdown = "leave";
+	static const char *inffmt = "%s %s { start %lu; hardware ethernet %s; "\
+				     "hostid %lu}";
 	const char *verb;
 
 	verb = lease;
@@ -182,9 +184,8 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 	itm.tv_sec = 0;
 	itm.tv_nsec = rndsec % 1000000000ul;
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
-		len = sprintf(buf, "%s %s { start %lu; " \
-				"hardware ethernet %s; }", verb, curinf->ip,
-				(unsigned long)curinf->tmstp, curinf->mac);
+		len = sprintf(buf, inffmt, verb, curinf->ip, curinf->tmstp,
+				curinf->mac, hostid);
 		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
 				serv->addr_len);
 		if (sysret == -1) {
@@ -206,9 +207,8 @@ static void ping_lidm(struct leserv *serv, const struct idinfo *inf, char *buf,
 		}
 	} while (sysret == -1);
 	for (curinf = inf; curinf; curinf = curinf->nxt) {
-		len = sprintf(buf, "%s %s { start %lu; " \
-				"hardware ethernet %s; }", verb, curinf->ip,
-				(unsigned long)curinf->tmstp, curinf->mac);
+		len = sprintf(buf, inffmt, verb, curinf->ip, curinf->tmstp,
+				curinf->mac, hostid);
 		sysret = sendto(serv->sock, buf, len, 0, &serv->addr,
 				serv->addr_len);
 		if (sysret == -1) {
@@ -229,6 +229,7 @@ int main(int argc, char *argv[])
 	struct sigaction mact;
 	struct leserv serv;
 	struct addrinfo hint, *serv_adr;
+	unsigned long hostid;
 	static const char * const port_default = "7800";
 	static const char * const lidm_default = "localhost";
 	const char *lidm, *port;
@@ -324,7 +325,8 @@ int main(int argc, char *argv[])
 		goto exit_10;
 	}
 
-	ping_lidm(&serv, inf, buf, leave);
+	hostid = gethostid();
+	ping_lidm(&serv, inf, buf, leave, hostid);
 
 	free(buf);
 	for (curinf = inf; curinf; curinf = nxt) {
