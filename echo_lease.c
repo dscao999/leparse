@@ -83,9 +83,8 @@ void * process_echo(void *dat)
 
 static int lease_parse(const char *info, struct lease_info *linfo)
 {
-	char *buf, *tok, *ip, *start, *mac, *saveptr;
-	int retv = 0, len, leave;
-	long tm;
+	char *buf, *tok, *saveptr;
+	int retv = 0, len;
 	static const char *token = " ;{}";
 
 	len = strlen(info);
@@ -96,29 +95,34 @@ static int lease_parse(const char *info, struct lease_info *linfo)
 	}
 	strcpy(buf, info);
 	tok = strtok_r(buf, token, &saveptr);
-	leave = strcmp(tok, "leave") == 0;
-	if (strcmp(tok, "lease") != 0 && !leave)
-		goto exit_10;
-	ip = strtok_r(NULL, token, &saveptr);
-	tok = strtok_r(NULL, token, &saveptr);
-	if (strcmp(tok, "start") != 0)
-		goto exit_10;
-	start = strtok_r(NULL, token, &saveptr);
-	tm = atoll(start);
-	tok = strtok_r(NULL, token, &saveptr);
-	if (strcmp(tok, "hardware") != 0)
-		goto exit_10;
-	tok = strtok_r(NULL, token, &saveptr);
-	if (strcmp(tok, "ethernet") != 0)
-		goto exit_10;
-	mac = strtok_r(NULL, token, &saveptr);
-	linfo->tm = tm;
-	linfo->leave = leave;
-	strcpy(linfo->mac, mac);
-	strcpy(linfo->ip, ip);
-	retv = len;
-
-exit_10:
+	memset(linfo, 0, sizeof(struct lease_info));
+	while (tok) {
+		if (strcmp(tok, "leave") == 0) {
+			linfo->leave = 1;
+			tok = strtok_r(NULL, token, &saveptr);
+			strcpy(linfo->ip, tok);
+		} else if (strcmp(tok, "lease") == 0) {
+			linfo->leave = 0;
+			tok = strtok_r(NULL, token, &saveptr);
+			strcpy(linfo->ip, tok);
+		} else if (strcmp(tok, "start") == 0) {
+			tok = strtok_r(NULL, token, &saveptr);
+			linfo->tm = atoll(tok);
+		} else if (strcmp(tok, "hardware") == 0) {
+			tok = strtok_r(NULL, token, &saveptr);
+			if (strcmp(tok, "ethernet") == 0) {
+				tok = strtok_r(NULL, token, &saveptr);
+				strcpy(linfo->mac, tok);
+			}
+		} else if (strcmp(tok, "hostid") == 0) {
+			tok = strtok_r(NULL, token, &saveptr);
+			linfo->hostid = atoll(tok);
+		}
+		tok = strtok_r(NULL, token, &saveptr);
+	}
+	if (likely((strlen(linfo->ip) != 0 && strlen(linfo->mac) != 0 &&
+			linfo->hostid != 0 && linfo->tm != 0)))
+		retv = 1;
 	free(buf);
 	return retv;
 }
@@ -308,6 +312,7 @@ int main(int argc, char *argv[])
 		sysret = lease_parse(buf, &worker->inf);
 		if (sysret == 0) {
 			free(worker);
+			elog("'%s' ignored\n", buf);
 			continue;
 		} else if (sysret == -1) {
 			free(worker);
