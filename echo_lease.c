@@ -22,16 +22,21 @@
 
 int verbose = 0;
 
+#define SEMSPER	256
+#define NUMSEMS	(SEMSPER*2)
+
 struct post_data {
 	int semset;
 };
-static struct post_data pdata = {.semset = -1};
+static struct post_data g_data = {.semset = -1};
 
 static void post_processing(int retv, void *arg)
 {
 	struct post_data *data = (struct post_data *)arg;
-	if (data->semset != -1)
+	if (data->semset != -1) {
 		semctl(data->semset, IPC_RMID, 0);
+		data->semset = -1;
+	}
 }
 
 struct thread_worker {
@@ -42,7 +47,6 @@ struct thread_worker {
 	const char *user_name;
 	void *id;
 	int fin;
-	int semset;
 };
 
 static inline int worker_equal(const struct thread_worker *w1,
@@ -68,7 +72,7 @@ void * process_echo(void *dat)
 	time_t tm;
 	static const struct timespec itv = {.tv_sec = 1, .tv_nsec = 0};
 
-	retv = dbproc(&me->inf, pdata.semset, me->user_name);
+	retv = dbproc(&me->inf, me->user_name);
 	atomic_dec(me->w_count);
 	if (retv)
 		elog("Somethin wrong in lease processing.\n");
@@ -175,7 +179,7 @@ int main(int argc, char *argv[])
 			assert(0);
 		}
 	} while (fin == 0);
-	on_exit(post_processing, &pdata);
+	on_exit(post_processing, &g_data);
 	if (verbose) {
 		elog("Listening on port: %s\n", port);
 	}
@@ -263,8 +267,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	pdata.semset = semget(IPC_PRIVATE, 2, IPC_CREAT|IPC_EXCL|0600);
-	if (unlikely(pdata.semset == -1)) {
+	g_data.semset = semget(IPC_PRIVATE, NUMSEMS, IPC_CREAT|IPC_EXCL|0600);
+	if (unlikely(g_data.semset == -1)) {
 		elog("Cannot get a semphore set: %s\n", strerror(errno));
 		goto exit_10;
 	}
@@ -275,9 +279,12 @@ int main(int argc, char *argv[])
 		unsigned short *array;
 		struct seminfo *__buf;
 	} smset;
-	unsigned short inv[2] = {1, 1};
-	smset.array = inv;
-	retv = semctl(pdata.semset, 0, SETALL,  smset);
+	unsigned short *cval;
+	int i;
+	smset.array = malloc(NUMSEMS*sizeof(unsigned short));
+	for (cval = smset.array, i = 0; i < NUMSEMS; i++,cval++)
+		*cval = 1;
+	retv = semctl(g_data.semset, 0, SETALL,  smset);
 	if (unlikely(retv == -1)) {
 		elog("Cannot set initial semphore: %s\n", strerror(errno));
 		goto exit_20;
@@ -306,7 +313,6 @@ int main(int argc, char *argv[])
 		}
 		worker->w_count = &w_count;
 		worker->fin = 0;
-		worker->semset = pdata.semset;
 		worker->user_name = user_name;
 		worker->id = worker;
 		sysret = lease_parse(buf, &worker->inf);
@@ -319,6 +325,7 @@ int main(int argc, char *argv[])
 			retv = 7;
 			goto exit_30;
 		}
+		worker->inf.semset = g_data.semset;
 		list_for_each_entry(wentry, &threads, lst) {
 			if (worker_equal(wentry, worker))
 				break;
@@ -372,8 +379,8 @@ exit_30:
 	elog("exit...\n");
 
 exit_20:
-	semctl(pdata.semset, IPC_RMID, 0);
-	pdata.semset = -1;
+	semctl(g_data.semset, IPC_RMID, 0);
+	g_data.semset = -1;
 exit_10:
 	free(buf);
 	close(sock);

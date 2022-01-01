@@ -124,76 +124,62 @@ static int trust_probe(const char *ip)
 	return retv;
 }
 
-static int sem_acquire(int semset, int semnum)
+static inline unsigned int poor_hash(unsigned long seed)
+{
+	unsigned int res;
+
+	res = 0;
+	while (seed) {
+		res ^= (seed & 0x0ff);
+		seed >>= 8;
+	}
+	return res;
+}
+
+static int host_lock(const struct lease_info *inf)
 {
 	int retv;
 	struct sembuf mop;
 
-	mop.sem_num = semnum;
+	mop.sem_num = poor_hash(inf->hostid);
 	mop.sem_op = -1;
 	mop.sem_flg = SEM_UNDO;
 	do {
-		retv = semop(semset, &mop, 1);
+		retv = semop(inf->semset, &mop, 1);
 		if (unlikely(retv == -1 && errno != EINTR))
 			break;
 	} while (retv == -1 && errno == EINTR);
 	return retv;
 }
 
-static inline int sem_release(int semset, int semnum)
+static inline int host_unlock(const struct lease_info *inf)
 {
 	struct sembuf mop;
 
-	mop.sem_num = semnum;
+	mop.sem_num = poor_hash(inf->hostid);
 	mop.sem_op = 1;
-	return semop(semset, &mop, 1);
+	return semop(inf->semset, &mop, 1);
 }
 
-static int try_and_log(struct maria *db, const struct lease_info *inf,
-		int semset)
+static int update_untrust(struct maria *db, const struct lease_info *inf)
 {
-	int retv, tries;
-	MYSQL_ROW row;
+	int retv;
 
-	retv = sem_acquire(semset, 1);
+	retv = host_lock(inf);
 	if (unlikely(retv)) {
-		elog("Failed to acquire semphore for update tries\n");
+		elog("Failed to lock host for updating untrusting host\n");
 		return retv;
 	}
-	retv = maria_query(db, 1, "select tries from citizen where " \
-			"mac = '%s' or mac2 = '%s'", inf->mac, inf->mac);
-	if (unlikely(retv != 0)) {
-		elog("DB query error for 'tries': %s\n", inf->mac);
+	if (trust_probe(inf->ip) == 0)
 		goto exit_10;
-	}
-	tries = -1;
-	row = mysql_fetch_row(db->res);
-	if (likely(row && row[0]))
-		tries = atoi(row[0]);
-	maria_free_result(db);
-	if (unlikely(tries == -1)) {
-		elog("Internal Error. Search 'tries' failed: %s\n", inf->mac);
-		goto exit_10;
-	}
-	tries += 1;
-	if (tries > 3) {
-		elog("%d tries to add %s failed. Deleted\n", tries, inf->mac);
-		retv = maria_query(db, 0, "delete from citizen where mac" \
-				" = '%s' or mac2 = '%s'", inf->mac, inf->mac);
-		if (unlikely(retv))
-			elog("failed to delete unmanaged mac from citizen\n");
-	} else {
-		retv = maria_query(db, 0, "update citizen set tries  = %d " \
-				"where mac = '%s' or mac2 = '%s'",
-				tries, inf->mac, inf->mac);
-		if (retv)
-			elog("update tries failed for '%s'\n", inf->mac);
-	}
-	if (verbose)
-		elog("%d time to manange %s failed.\n",
-				tries, inf->mac);
+	retv = maria_query(db, 0, "delete from citizen where mac" \
+			" = '%s' or mac2 = '%s'", inf->mac, inf->mac);
+	if (unlikely(retv))
+		elog("failed to delete untrusting mac from citizen\n");
+	else 
+		elog("MAC: %s record deleted\n", inf->mac);
 exit_10:
-	sem_release(semset, 1);
+	host_unlock(inf);
 	return retv;
 }
 
@@ -203,14 +189,14 @@ static int update_trusted(struct maria *db, const struct lease_info *inf,
 	int retv = 0;
 
 	if (mac2) {
-		retv = maria_query(db, 0, "update citizen set " \
+		retv = maria_query(db, 0, "update citizen set tries = 0, " \
 				"last = %lu, ip2 = '%s' where " \
 				"mac2 = '%s'", inf->tm, inf->ip, inf->mac);
 		if (unlikely(retv))
 			elog("Cannot update citizen mac2 %s, ip %s.\n",
 					inf->mac, inf->ip);
 	} else {
-		retv = maria_query(db, 0, "update citizen set " \
+		retv = maria_query(db, 0, "update citizen set tries = 0, " \
 				"last = %lu, ip = '%s' where " \
 				"mac = '%s'", inf->tm, inf->ip, inf->mac);
 		if (unlikely(retv))
@@ -221,7 +207,7 @@ static int update_trusted(struct maria *db, const struct lease_info *inf,
 }
 
 static int update_citizen(struct maria *db, const struct lease_info *inf,
-		int mac2, const char *uuid, int trusted, int semset)
+		int mac2, const char *uuid, int trusted)
 {
 	int retv = 0;
 
@@ -233,7 +219,7 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	} else {
 		if (!trusted) {
 			/* mac already in database, trust not build */
-			retv = try_and_log(db, inf, semset);
+			retv = update_untrust(db, inf);
 		} else {
 			/* mac already in database, trust exists */
 			assert(uuid != NULL);
@@ -242,6 +228,8 @@ static int update_citizen(struct maria *db, const struct lease_info *inf,
 	}
 	return retv;
 }
+
+#define TRUST_ALREADY	10000
 
 static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 {
@@ -253,7 +241,7 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	assert(reslen >= CMDLEN+INPLEN+MSGLEN);
 	retv = trust_probe(oinf->ip);
 	if (unlikely(retv == 0))
-		return 10000;
+		return TRUST_ALREADY;
 	if (unlikely(retv == 1024))
 		return retv;
 
@@ -357,12 +345,10 @@ static int insert_trusted(struct os_info *oinf, const struct lease_info *inf,
 			elog("Delete from citizen where mac = %s failed\n",
 					inf->mac);
 	} else {
-		if (verbose)
-			elog("Reset password for mac: %s, ip: %s\n",
-					inf->mac, inf->ip);
+		/* records deleted for the host, reset password */
 		retv = reset_default_passwd(db, inf, buf, buflen);
-		if (unlikely(retv != 0))
-			elog("reset_passwd failed\n");
+		if (unlikely(retv))
+			elog("Unable to reset the password for %s\n", inf->mac);
 	}
 	return retv;
 }
@@ -408,13 +394,11 @@ static int insert_untrust(struct os_info *oinf, const struct lease_info *inf,
 
 	retv = ssh_copyid(buf, buflen, oinf);
 	if (unlikely(retv != 0)) {
-		if (retv != 10000) {
-			elog("ssh_copyid failed\n");
-		} else {
-			if (verbose)
-				elog("trust established already\n");
+		if (retv == TRUST_ALREADY) {
+			elog("trust built up when doing ssh-copyid\n");
 			retv = 0;
-		}
+		} else
+			elog("ssh_copyid failed\n");
 		goto err_exit_10;
 	}
 
@@ -451,7 +435,7 @@ err_exit_10:
 	return retv;
 }
 
-int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
+int dbproc(const struct lease_info *inf, const char *usrnam)
 {
 	struct maria *db;
 	int retv = 0, trusted, unreachable;
@@ -549,14 +533,15 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 			mac2 = 0;
 			if (macadr2 && strcmp(macadr2, inf->mac) == 0)
 				mac2 = 1;
-			update_citizen(db, inf, mac2, uuid, trusted, semset);
+			update_citizen(db, inf, mac2, uuid, trusted);
 		}
 		goto exit_20;
 	}
 	if (unlikely(inf->leave || unreachable))
 		goto exit_20;
 
-	retv = sem_acquire(semset, 0);
+	/* a mac address come up */
+	retv = host_lock(inf);
 	if (unlikely(retv))
 		goto exit_20;
 	if (trusted) {
@@ -566,7 +551,7 @@ int dbproc(const struct lease_info *inf, int semset, const char *usrnam)
 		/* new mac found, no trust exists */
 		retv = insert_untrust(oinf, inf, db, buf, buflen);
 	}
-	sem_release(semset, 0);
+	host_unlock(inf);
 
 exit_20:
 	maria_exit(db);

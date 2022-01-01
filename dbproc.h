@@ -7,6 +7,7 @@ struct lease_info {
 	unsigned long hostid;
 	time_t tm;
 	int leave;
+	int semset;
 };
 
 struct os_info {
@@ -27,5 +28,5 @@ static inline void dump_lease_info(const struct lease_info *linfo)
 
 extern int verbose;
 
-int dbproc(const struct lease_info *inf, int semset, const char *usrnam);
+int dbproc(const struct lease_info *inf, const char *usrnam);
 #endif  /* DBPROC_DSCAO__ */
