@@ -431,6 +431,57 @@ err_exit_10:
 	return retv;
 }
 
+int delete_null_uuid(const char *usrnam)
+{
+	struct maria *db;
+	int retv, found = -1;
+	MYSQL_ROW row;
+
+	db = malloc(sizeof(struct maria));
+	if (!db) {
+		elog("Out of Memory\n");
+		return -ENOMEM;
+	}
+	retv = maria_init(db, "lidm", usrnam);
+	if (unlikely(retv != 0)) {
+		elog("Cannot initialize db connection to %s\n", "lidm");
+		retv = -1;
+		goto exit_10;
+	}
+	retv = maria_query(db, 1, "select count(*) from citizen where uuid " \
+			"is null");
+	if (unlikely(retv)) {
+		retv = -2;
+		elog("Logic Error. Cannot select count(*) from citizen " \
+				"where uuid is null\n");
+		goto exit_20;
+	}
+	row = mysql_fetch_row(db->res);
+	if (likely(row && row[0]))
+		found = atoi(row[0]);
+	maria_free_result(db);
+	if (unlikely(found == -1)) {
+		elog("Logic Error. Select count(*) where uuid is NULL " \
+				"returns NULL\n");
+		retv = -3;
+		goto exit_20;
+	}
+	retv = maria_query(db, 0, "delete from citizen where uuid is null");
+	if (unlikely(retv)) {
+		elog("Cannot delete null uuid records\n");
+		retv = -4;
+		goto exit_20;
+	}
+	if (found > 0)
+		elog("%d records deleted where uuid is NULL\n");
+	retv = found;
+exit_20:
+	maria_exit(db);
+exit_10:
+	free(db);
+	return retv;
+}
+
 int dbproc(const struct lease_info *inf, const char *usrnam)
 {
 	struct maria *db;

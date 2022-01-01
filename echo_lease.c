@@ -266,6 +266,8 @@ int main(int argc, char *argv[])
 			goto exit_10;
 		}
 	}
+	if (delete_null_uuid(user_name) < 0)
+		goto exit_10;
 
 	g_data.semset = semget(IPC_PRIVATE, NUMSEMS, IPC_CREAT|IPC_EXCL|0600);
 	if (unlikely(g_data.semset == -1)) {

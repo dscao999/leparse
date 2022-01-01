@@ -29,4 +29,5 @@ static inline void dump_lease_info(const struct lease_info *linfo)
 extern int verbose;
 
 int dbproc(const struct lease_info *inf, const char *usrnam);
+int delete_null_uuid(const char *usrnam);
 #endif  /* DBPROC_DSCAO__ */
