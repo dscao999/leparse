@@ -189,16 +189,16 @@ static int update_trusted(struct maria *db, const struct lease_info *inf,
 	int retv = 0;
 
 	if (mac2) {
-		retv = maria_query(db, 0, "update citizen set tries = 0, " \
-				"last = %lu, ip2 = '%s' where " \
-				"mac2 = '%s'", inf->tm, inf->ip, inf->mac);
+		retv = maria_query(db, 0, "update citizen set last = %lu, " \
+				"ip2 = '%s' where mac2 = '%s'",
+				inf->tm, inf->ip, inf->mac);
 		if (unlikely(retv))
 			elog("Cannot update citizen mac2 %s, ip %s.\n",
 					inf->mac, inf->ip);
 	} else {
-		retv = maria_query(db, 0, "update citizen set tries = 0, " \
-				"last = %lu, ip = '%s' where " \
-				"mac = '%s'", inf->tm, inf->ip, inf->mac);
+		retv = maria_query(db, 0, "update citizen set last = %lu, " \
+				"ip = '%s' where mac = '%s'",
+				inf->tm, inf->ip, inf->mac);
 		if (unlikely(retv))
 			elog("Cannot update citizen mac: %s, ip: %s.\n",
 					inf->mac, inf->ip);
@@ -338,11 +338,7 @@ static int insert_trusted(struct os_info *oinf, const struct lease_info *inf,
 				"last = %lu, ip2 = '%s' where  uuid = '%s'",
 				inf->mac, inf->tm, inf->ip, oinf->uuid);
 		if (unlikely(retv))
-			elog("Cannot Set mac2/ip2: %s\n", __func__);
-		retv = maria_query(db, 0, "delete from citizen " \
-				"where mac = '%s'", inf->mac);
-		if (unlikely(retv && verbose))
-			elog("Delete from citizen where mac = %s failed\n",
+			elog("Cannot Set mac2/ip2 at %s for %s\n", __func__,
 					inf->mac);
 	} else {
 		/* records deleted for the host, reset password */
