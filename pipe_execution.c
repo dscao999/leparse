@@ -14,6 +14,60 @@
 #define CMDLEN 512
 #define MSGLEN 2048
 
+static int wait_and_get(int subpid, char *res, int reslen, struct pollfd *pfd,
+		const char *cmdline)
+{
+	int lenrem, curpos, retv, sysret, numb;
+
+	lenrem = reslen - 1;
+	curpos = 0;
+	do {
+		pfd->revents = 0;
+		sysret = poll(pfd, 1, 200);
+		numb = 0;
+		if (sysret == 1) {
+			if (lenrem == 0) {
+				elog("Warning: command %s results overflow.\n",
+						cmdline);
+				lenrem = reslen - 1;
+				curpos = 0;
+			}
+			if ((pfd->revents & POLLIN) != 0) {
+				numb = read(pfd->fd, res+curpos, lenrem);
+				if (numb > 0) {
+					curpos += numb;
+					lenrem -= numb;
+				}
+			}
+		}
+		sysret = waitpid(subpid, &retv, WNOHANG);
+	} while (sysret == 0 && numb >= 0);
+	if (numb == -1 && sysret == 0) {
+		elog("PIPE read failed: %s\n", strerror(errno));
+		kill(subpid, SIGTERM);
+		sysret = waitpid(subpid, &retv, 0);
+	}
+	pfd->revents = 0;
+	sysret = poll(pfd, 1, 0);
+	if (sysret > 0 && (pfd->revents & POLLIN) != 0) {
+		if (lenrem == 0) {
+			elog("Warning: command %s results overflow.\n",
+					cmdline);
+			lenrem = reslen - 1;
+			curpos = 0;
+		}
+		if ((pfd->revents & POLLIN) != 0) {
+			numb = read(pfd->fd, res+curpos, lenrem);
+			if (numb > 0) {
+				curpos += numb;
+				lenrem -= numb;
+			}
+		}
+	}
+	*(res+curpos) = 0;
+	return retv;
+}
+
 int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 {
 	int sysret, retv, pfdin[2], pfdout[2], idx;
@@ -74,12 +128,14 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		close(pfdout[1]);
 		fdin = pfdout[0];
 		fclose(stdin);
-		fclose(stdout);
-		fclose(stderr);
 		stdin = fdopen(dup(fdin), "r");
-		stdout = fdopen(dup(fdout), "w");
-		stderr = fdopen(dup(fdout), "w");
 		close(fdin);
+		if (res != NULL) {
+			fclose(stdout);
+			stdout = fdopen(dup(fdout), "w");
+			fclose(stderr);
+			stderr = fdopen(dup(fdout), "w");
+		}
 		close(fdout);
 		if (lsl)
 			sysret = execv(cmd, args);
@@ -87,7 +143,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 			sysret = execvp(cmd, args);
 		if (sysret == -1)
 			elog("execv failed: %s\n", strerror(errno));
-		exit(1);
+		exit(errno);
 	}
 	fdout = pfdout[1];
 	close(pfdout[0]);
@@ -115,50 +171,16 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		ln += inlen;
 	}
 
-	int lenrem, curpos;
-
 	pfd.fd = fdin;
 	pfd.events = POLLIN;
-	lenrem = reslen - 1;
-	curpos = 0;
-	do {
-		pfd.revents = 0;
-		sysret = poll(&pfd, 1, 200);
-		if (sysret == 1) {
-			if (lenrem == 0) {
-				elog("Warning: command %s results overflow.\n",
-						cmdline);
-				lenrem = reslen - 1;
-				curpos = 0;
-			}
-			if ((pfd.revents & POLLIN) != 0) {
-				numb = read(fdin, res+curpos, lenrem);
-				if (numb > 0) {
-					curpos += numb;
-					lenrem -= numb;
-				}
-			}
-		}
-		sysret = waitpid(subpid, &retv, WNOHANG);
-	} while (sysret == 0);
-	pfd.revents = 0;
-	sysret = poll(&pfd, 1, 0);
-	if (sysret > 0 && (pfd.revents & POLLIN) != 0) {
-		if (lenrem == 0) {
-			elog("Warning: command %s results overflow.\n",
-					cmdline);
-			lenrem = reslen - 1;
-			curpos = 0;
-		}
-		if ((pfd.revents & POLLIN) != 0) {
-			numb = read(fdin, res+curpos, lenrem);
-			if (numb > 0) {
-				curpos += numb;
-				lenrem -= numb;
-			}
-		}
+	if (res)
+		retv = wait_and_get(subpid, res, reslen, &pfd, cmdline);
+	else {
+		do
+			sysret = waitpid(subpid, &retv, 0);
+		while (sysret == -1 && errno == EINTR);
+		assert(sysret > 0);
 	}
-	*(res+curpos) = 0;
 	if (unlikely(retv != 0))
 		elog("failed command: code %X %s\n--->%s\n", retv, cmdline, res);
 
@@ -187,7 +209,8 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 	static const char *e0fmt = "ssh -o BatchMode=yes -l root %s -- %s";
 	static const char *rmfmt = "ssh -o BatchMode=yes -l root %s rm ./%s";
 
-	res[0] = 0;
+	if (res)
+		res[0] = 0;
 	if (!cmdline)
 		return retv;
 	cmdbuf = malloc(CMDLEN+MSGLEN+128);

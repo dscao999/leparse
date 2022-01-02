@@ -9,9 +9,9 @@ int verbose = 0;
 
 int main(int argc, char *argv[])
 {
-	int c, fin, rm, reslen, retv;
+	int c, fin, rm, retv;
 	const char *peer, *exfile;
-	char *res, *cmdline;
+	char *cmdline;
 	int i, pntpos, pntlen;
 	extern char *optarg;
 	extern int optind, opterr, optopt;
@@ -58,18 +58,15 @@ int main(int argc, char *argv[])
 	}
 	elog_init();
 	
-	reslen = 1024;
-	res = malloc(reslen+1024);
-	cmdline = res + reslen;
+	cmdline = malloc(1024);
 	pntpos = 0;
 	for (i = optind; i < argc; i++) {
 		pntlen = sprintf(cmdline+pntpos, " %s", argv[i]);
 		pntpos += pntlen;
 	}
-	retv = ssh_execute(res, reslen, peer, cmdline, NULL, rm);
+	retv = ssh_execute(NULL, 0, peer, cmdline, NULL, rm);
 	if (retv != 0)
 		elog("Remote execution failed.\n");
-	elog("%s\n", res);
-	free(res);
+	free(cmdline);
 	return retv;
 }
