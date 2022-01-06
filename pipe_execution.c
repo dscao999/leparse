@@ -13,6 +13,7 @@
 
 #define CMDLEN 512
 #define MSGLEN 2048
+#define MAXARGS 21
 
 static int wait_and_get(int subpid, char *res, int reslen, struct pollfd *pfd,
 		const char *cmdline)
@@ -68,31 +69,54 @@ static int wait_and_get(int subpid, char *res, int reslen, struct pollfd *pfd,
 	return retv;
 }
 
-int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
+static void parse_execute(const char *cmdline)
 {
-	int sysret, retv, pfdin[2], pfdout[2], idx;
-	int fdout, fdin, numargs, cmdlen, inlen;
 	char *curchr, **args, *cmdbuf, *cmd, *lsl, *saveptr;
-	const char *ln, *lnmark;
-	pid_t subpid;
-	int numb, len;
+	int idx, len, retv = 0, cmdlen, numargs, sysret;
 
-	retv = -1;
 	if (!cmdline)
-		return retv;
+		exit(retv);
 	len = strlen(cmdline);
 	if (len < 1)
-		return retv;
+		exit(retv);
 	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
-	numargs = 21;
+	numargs = MAXARGS;
 	cmdbuf = malloc(cmdlen+sizeof(char *)*numargs + 128);
 	if (!cmdbuf) {
 		elog("Out of Memory.\n");
-		return -100;
+		exit(100);
 	}
 	args = (char **)(cmdbuf + cmdlen);
 	cmd = (char *)(args + numargs);
 	strcpy(cmdbuf, cmdline);
+	curchr = strtok_r(cmdbuf, " ", &saveptr);
+	strcpy(cmd, curchr);
+	lsl = strrchr(cmd, '/');
+	idx = 0;
+	while (curchr && idx < numargs - 1) {
+		args[idx++] = curchr;
+		curchr = strtok_r(NULL, " ", &saveptr);
+	}
+	args[idx] = NULL;
+	if (lsl)
+		args[0] = lsl + 1;
+	if (lsl)
+		sysret = execv(cmd, args);
+	else
+		sysret = execvp(cmd, args);
+	if (sysret == -1)
+		elog("execv failed: %s\n", strerror(errno));
+	exit(errno);
+}
+
+int one_execute(char *res, int reslen, const char *cmdline, const char *input)
+{
+	int sysret, retv, pfdin[2], pfdout[2];
+	int fdout, fdin, inlen;
+	const char *ln, *lnmark;
+	pid_t subpid;
+	int numb;
+
 	retv = pipe(pfdin);
 	if (retv == -1) {
 		elog("pipe failed: %s\n", strerror(errno));
@@ -105,17 +129,6 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		retv = -errno;
 		goto exit_20;
 	}
-	curchr = strtok_r(cmdbuf, " ", &saveptr);
-	strcpy(cmd, curchr);
-	lsl = strrchr(cmd, '/');
-	idx = 0;
-	while (curchr && idx < numargs - 1) {
-		args[idx++] = curchr;
-		curchr = strtok_r(NULL, " ", &saveptr);
-	}
-	args[idx] = NULL;
-	if (lsl)
-		args[0] = lsl + 1;
 	subpid = fork();
 	if (unlikely(subpid == -1)) {
 		elog("fork failed: %s\n", strerror(errno));
@@ -137,13 +150,7 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 			stderr = fdopen(dup(fdout), "w");
 		}
 		close(fdout);
-		if (lsl)
-			sysret = execv(cmd, args);
-		else
-			sysret = execvp(cmd, args);
-		if (sysret == -1)
-			elog("execv failed: %s\n", strerror(errno));
-		exit(errno);
+		parse_execute(cmdline);
 	}
 	fdout = pfdout[1];
 	close(pfdout[0]);
@@ -193,7 +200,6 @@ exit_20:
 	close(pfdin[1]);
 
 exit_10:
-	free(cmdbuf);
 	return retv;
 }
 
@@ -240,7 +246,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			goto exit_10;
 		}
 		sprintf(cmdbuf, cpfmt, cmdfile, ip);
-		retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
+		retv = one_execute(tmpres, MSGLEN, cmdbuf, NULL);
 		if (unlikely(retv != 0)) {
 			elog("ssh copy failed: %s\n", cmdfile);
 			goto exit_10;
@@ -250,14 +256,14 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		len = sprintf(cmdbuf, e0fmt, ip, cmd);
 	if (bsl)
 		sprintf(cmdbuf+len, "%s", bsl);
-	retv = pipe_execute(res, reslen, cmdbuf, input);
+	retv = one_execute(res, reslen, cmdbuf, input);
 	if (unlikely(retv != 0))
 		goto exit_10;
 	if (!rm || !lsl)
 		goto exit_10;
 
 	sprintf(cmdbuf, rmfmt, ip, cmd);
-	retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
+	retv = one_execute(tmpres, MSGLEN, cmdbuf, NULL);
 	if (unlikely(retv != 0))
 		elog("Cannot remove file %s at %s-->\n", cmd, ip, tmpres);
 

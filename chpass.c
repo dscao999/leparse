@@ -114,7 +114,7 @@ int main(int argc, char *argv[])
 		elog("Cannot update password for %s\n", uuid);
 		goto exit_20;
 	}
-	retv = pipe_execute(res, reslen, cmd, input);
+	retv = one_execute(res, reslen, cmd, input);
 	if (unlikely(retv)) {
 		elog("Cannot change passwod for %s\n", uuid);
 		goto exit_20;

@@ -67,7 +67,7 @@ static inline int ssh_remove_stale_ip(const char *ip)
 	}
 	res = cmd + CMDLEN;
 	sprintf(cmd, fmt, ip);
-	retv = pipe_execute(res, MSGLEN, cmd, NULL);
+	retv = one_execute(res, MSGLEN, cmd, NULL);
 	if (verbose)
 		elog("%s\n", res);
 	free(cmd);
@@ -249,7 +249,7 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	input = cmdline + CMDLEN;
 	mesg = input + INPLEN;
 	sprintf(cmdline, cpyfmt, oinf->passwd, oinf->user, oinf->ip);
-	retv = pipe_execute(mesg, MSGLEN, cmdline, NULL);
+	retv = one_execute(mesg, MSGLEN, cmdline, NULL);
 	if (unlikely(retv != 0)) {
 		elog("ssh-copy-id failed\n");
 		return retv;
@@ -260,7 +260,7 @@ static int ssh_copyid(char *res, int reslen, const struct os_info *oinf)
 	strcpy(input, passwd);
 	strcat(input, passwd);
 	strcat(input, passwd);
-	retv = pipe_execute(mesg, MSGLEN, cmdline, input);
+	retv = one_execute(mesg, MSGLEN, cmdline, input);
 	if (unlikely(retv != 0))
 		elog("ssh-copy-id failed in copying to root\n");
 	return retv;

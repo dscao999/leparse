@@ -258,7 +258,7 @@ int main(int argc, char *argv[])
 		unlink(buf);
 		len = sprintf(buf, "ssh-keygen -t ecdsa -N \"\" " \
 				"-f %s/.ssh/id_ecdsa", pwd->pw_dir); 
-		retv = pipe_execute(buf+len, buflen-len, buf, NULL);
+		retv = one_execute(buf+len, buflen-len, buf, NULL);
 		if (verbose)
 			elog("%s\n", buf+len);
 		if (retv) {
