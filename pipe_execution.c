@@ -117,6 +117,8 @@ int one_execute(char *res, int reslen, const char *cmdline, const char *input)
 	pid_t subpid;
 	int numb;
 
+	if (res)
+		res[0] = 0;
 	retv = pipe(pfdin);
 	if (retv == -1) {
 		elog("pipe failed: %s\n", strerror(errno));
@@ -246,7 +248,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			goto exit_10;
 		}
 		sprintf(cmdbuf, cpfmt, cmdfile, ip);
-		retv = one_execute(tmpres, MSGLEN, cmdbuf, NULL);
+		retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
 		if (unlikely(retv != 0)) {
 			elog("ssh copy failed: %s\n", cmdfile);
 			goto exit_10;
@@ -256,18 +258,169 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		len = sprintf(cmdbuf, e0fmt, ip, cmd);
 	if (bsl)
 		sprintf(cmdbuf+len, "%s", bsl);
-	retv = one_execute(res, reslen, cmdbuf, input);
+	retv = pipe_execute(res, reslen, cmdbuf, input);
 	if (unlikely(retv != 0))
 		goto exit_10;
 	if (!rm || !lsl)
 		goto exit_10;
 
 	sprintf(cmdbuf, rmfmt, ip, cmd);
-	retv = one_execute(tmpres, MSGLEN, cmdbuf, NULL);
+	retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
 	if (unlikely(retv != 0))
 		elog("Cannot remove file %s at %s-->\n", cmd, ip, tmpres);
 
 exit_10:
+	free(cmdbuf);
+	return retv;
+}
+
+#define MAX_PIPES	10
+struct pipe_element {
+	const char *cmd;
+	pid_t pid;
+	int pin, pout;
+};
+
+int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
+{
+	int sysret, retv, pout, pin, inlen, idx;
+	const char *ln;
+	int npipes, buflen, pipe_fd[2], len;
+	char *cmdbuf, *saveptr, *tokchr;
+	struct pipe_element *pcmd, *cpcmd, *lpcmd;
+
+	retv = 0;
+	if (res)
+		res[0] = 0;
+	if (!cmdline)
+		return retv;
+	len = strlen(cmdline);
+	if (len < 1)
+		return retv;
+	len = (len / sizeof(char *) + 1) * sizeof(char *);
+	buflen = len + MAX_PIPES * sizeof(struct pipe_element);
+	cmdbuf = malloc(buflen);
+	if (!cmdbuf) {
+		elog("Out of Memor\n");
+		return -ENOMEM;
+	}
+	pcmd = (struct pipe_element *)(cmdbuf + len);
+	memset(pcmd, 0, MAX_PIPES * sizeof(struct pipe_element));
+	strcpy(cmdbuf, cmdline);
+	pin = 0;
+	pout = 0;
+	tokchr = strtok_r(cmdbuf, "|", &saveptr);
+	cpcmd = pcmd;
+	lpcmd = pcmd + MAX_PIPES;
+	sysret = pipe(pipe_fd);
+	if (sysret == -1) {
+		elog("pipe failed: %s\n", strerror(errno));
+		retv = -errno;
+		goto exit_10;
+	}
+	pout = pipe_fd[1];
+	while (tokchr && cpcmd < lpcmd) {
+		cpcmd->cmd = tokchr;
+		tokchr = strtok_r(NULL, "|", &saveptr);
+		cpcmd->pin = pipe_fd[0];
+		sysret = pipe(pipe_fd);
+		if (sysret == -1) {
+			elog("pipe failed: %s\n", strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
+		cpcmd->pout = pipe_fd[1];
+		cpcmd += 1;
+	}
+	assert(tokchr == NULL);
+	npipes = (cpcmd - pcmd);
+	pin = pipe_fd[0];
+	for (cpcmd = pcmd, idx = 0; idx < npipes - 1; idx++, cpcmd++) {
+		cpcmd->pid = fork();
+		if (cpcmd->pid == -1) {
+			elog("fork failed: %s\n", strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
+		if (cpcmd->pid == 0) {
+			fclose(stdin);
+			stdin = fdopen(dup(cpcmd->pin), "rb");
+			fclose(stdout);
+			stdout = fdopen(dup(cpcmd->pout), "wb");
+			parse_execute(cpcmd->cmd);
+		}
+	}
+	cpcmd->pid = fork();
+	if (cpcmd->pid == -1) {
+		elog("fork failed: %s\n", strerror(errno));
+		retv = -errno;
+		goto exit_10;
+	}
+	if (cpcmd->pid == 0) {
+		fclose(stdin);
+		stdin = fdopen(dup(cpcmd->pin), "rb");
+		if (res) {
+			fclose(stdout);
+			stdout = fdopen(dup(cpcmd->pout), "wb");
+			fclose(stderr);
+			stderr = fdopen(dup(cpcmd->pout), "wb");
+		}
+		parse_execute(cpcmd->cmd);
+	}
+
+	struct pollfd pfd;
+	pfd.fd = pout;
+	pfd.events = POLLOUT;
+	ln = input;
+	while (ln && *ln) {
+		pfd.revents = 0;
+		sysret = poll(&pfd, 1, 200);
+		if (pfd.revents & POLLERR)
+			break;
+		inlen = strlen(ln);
+		len = write(pfd.fd, ln, inlen);
+		if (len == -1) {
+			elog("Write input through pipe failed: %s\n",
+					strerror(errno));
+			break;
+		} else
+			ln += len;
+	}
+
+	pfd.fd = pin;
+	pfd.events = POLLIN;
+	if (res)
+		retv = wait_and_get(cpcmd->pid, res, reslen, &pfd, cmdline);
+	else {
+		do
+			sysret = waitpid(cpcmd->pid, &retv, 0);
+		while (sysret == -1 && errno == EINTR);
+		assert(sysret > 0);
+	}
+	cpcmd->pid = 0;
+
+exit_10:
+	if (pin)
+		close(pin);
+	if (pout)
+		close(pout);
+	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
+		if (cpcmd->pin)
+			close(cpcmd->pin);
+		if (cpcmd->pout)
+			close(cpcmd->pout);
+		if (cpcmd->pid == 0)
+			continue;
+		do
+			sysret = waitpid(cpcmd->pid, NULL, 0);
+		while (sysret == -1 && errno == EINTR);
+		if (unlikely(sysret == -1))
+			elog("waitpid failed for %s: %s\n", cpcmd->cmd,
+					strerror(errno));
+	}
+	if (unlikely(retv != 0))
+		elog("failed command: code %X %s\n--->%s\n", retv, cmdline, res);
+
 	free(cmdbuf);
 	return retv;
 }
