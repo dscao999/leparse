@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <assert.h>
 #include "miscs.h"
 #include "pipe_execution.h"
@@ -248,7 +249,7 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 			goto exit_10;
 		}
 		sprintf(cmdbuf, cpfmt, cmdfile, ip);
-		retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
+		retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL, 0);
 		if (unlikely(retv != 0)) {
 			elog("ssh copy failed: %s\n", cmdfile);
 			goto exit_10;
@@ -258,14 +259,14 @@ int ssh_execute(char *res, int reslen, const char *ip, const char *cmdline,
 		len = sprintf(cmdbuf, e0fmt, ip, cmd);
 	if (bsl)
 		sprintf(cmdbuf+len, "%s", bsl);
-	retv = pipe_execute(res, reslen, cmdbuf, input);
+	retv = pipe_execute(res, reslen, cmdbuf, input, 0);
 	if (unlikely(retv != 0))
 		goto exit_10;
 	if (!rm || !lsl)
 		goto exit_10;
 
 	sprintf(cmdbuf, rmfmt, ip, cmd);
-	retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL);
+	retv = pipe_execute(tmpres, MSGLEN, cmdbuf, NULL, 0);
 	if (unlikely(retv != 0))
 		elog("Cannot remove file %s at %s-->\n", cmd, ip, tmpres);
 
@@ -278,18 +279,92 @@ exit_10:
 struct pipe_element {
 	const char *cmd;
 	pid_t pid;
-	int pin, pout;
+	int pin, pout, perr;
 };
 
-int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
+static void close_all(struct pipe_element *pcmd, int npipes)
 {
-	int sysret, retv, pout, pin, inlen, idx;
-	const char *ln;
-	int npipes, buflen, pipe_fd[2], len;
-	char *cmdbuf, *saveptr, *tokchr;
+	int idx;
+	struct pipe_element *cpcmd;
+
+	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
+		if (likely(cpcmd->pin))
+			close(cpcmd->pin);
+		close(cpcmd->pout);
+		close(cpcmd->perr);
+		cpcmd->pin = 0;
+		cpcmd->pout = 0;
+		cpcmd->perr = 0;
+	}
+}
+
+static int probe_io(struct pollfd *pfd, int numpfds, const char *input,
+		const char **nxin, char *res, int reslen)
+{
+	int sysret, retv, i, numr, numw, len, numb;
+	struct pollfd *cpfd;
+
+	*nxin = input;
+	retv = 0;
+	for (cpfd = pfd, i = 0; i < numpfds; i++, cpfd++)
+		cpfd->revents = 0;
+	sysret = poll(pfd, numpfds, 200);
+	if (sysret == 0 || (sysret == -1 && errno == EINTR))
+		return retv;
+	if (sysret == -1) {
+		elog("poll failed: %s\n", strerror(errno));
+		return sysret;
+	}
+	numb = 0;
+	for (cpfd = pfd, i = 0; i < numpfds; i++, cpfd++) {
+		if (cpfd->revents & POLLIN) {
+			numr = read(cpfd->fd, res, reslen);
+			if (numr == -1) {
+				elog("Failed to read: %s\n", strerror(errno));
+				return numr;
+			}
+			numb += numr;
+			res += numb;
+			reslen -= numb;
+			if (reslen)
+				*res = 0;
+			else
+				*(res-1) = 0;
+			cpfd->revents ^= POLLIN;
+		}
+		if (cpfd->revents & POLLOUT) {
+			len = strlen(input);
+			numw = write(cpfd->fd, input, len);
+			if (numw == -1) {
+				elog("failed to write: %s\n",
+						strerror(errno));
+				return numw;
+			}
+			*nxin = input + numw;
+			cpfd->revents ^= POLLOUT;
+		}
+	       	if (cpfd->revents && cpfd->revents != POLLHUP)
+			elog("fd: %d, error: %X\n", cpfd->fd, cpfd->revents);
+	}
+	return numb;
+}
+
+int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
+		const char *ofname)
+{
+	int sysret, retv, pout, pin, poerr, pierr, idx;
+	int ofd, *retvs, fin;
+	int npipes, buflen, pipe_fd[2], len, lenrem, cmdlen;
+	char *cmdbuf, *saveptr, *tokchr, *resbuf;
+	const char *input_ptr;
 	struct pipe_element *pcmd, *cpcmd, *lpcmd;
 
 	retv = 0;
+	pout = 0;
+	pin = 0;
+	poerr = 0;
+	pierr = 0;
+	ofd = 0;
 	if (res)
 		res[0] = 0;
 	if (!cmdline)
@@ -297,21 +372,36 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 	len = strlen(cmdline);
 	if (len < 1)
 		return retv;
-	len = (len / sizeof(char *) + 1) * sizeof(char *);
-	buflen = len + MAX_PIPES * sizeof(struct pipe_element);
+	cmdlen = (len / sizeof(char *) + 1) * sizeof(char *);
+	buflen = cmdlen + MAX_PIPES * sizeof(struct pipe_element)
+		+ MAX_PIPES * sizeof(int *);
 	cmdbuf = malloc(buflen);
 	if (!cmdbuf) {
 		elog("Out of Memor\n");
 		return -ENOMEM;
 	}
-	pcmd = (struct pipe_element *)(cmdbuf + len);
+	retv = 0;
+	pcmd = (struct pipe_element *)(cmdbuf + cmdlen);
+	retvs = (int *)(pcmd + MAX_PIPES);
 	memset(pcmd, 0, MAX_PIPES * sizeof(struct pipe_element));
-	strcpy(cmdbuf, cmdline);
-	pin = 0;
-	pout = 0;
-	tokchr = strtok_r(cmdbuf, "|", &saveptr);
+	for (idx = 0; idx < MAX_PIPES; idx++)
+		*(retvs+idx) = -1;
 	cpcmd = pcmd;
 	lpcmd = pcmd + MAX_PIPES;
+	sysret = pipe(pipe_fd);
+	if (unlikely(sysret == -1)) {
+		elog("pipe failed: %s\n", strerror(errno));
+		retv = -errno;
+		goto exit_10;
+	}
+	pierr = pipe_fd[0];
+	poerr = pipe_fd[1];
+	if (!res) {
+		close(pierr);
+		close(poerr);
+		pierr = 0;
+		poerr = dup(fileno(stderr));
+	}
 	sysret = pipe(pipe_fd);
 	if (sysret == -1) {
 		elog("pipe failed: %s\n", strerror(errno));
@@ -319,6 +409,8 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 		goto exit_10;
 	}
 	pout = pipe_fd[1];
+	strcpy(cmdbuf, cmdline);
+	tokchr = strtok_r(cmdbuf, "|", &saveptr);
 	while (tokchr && cpcmd < lpcmd) {
 		cpcmd->cmd = tokchr;
 		tokchr = strtok_r(NULL, "|", &saveptr);
@@ -330,12 +422,42 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 			goto exit_10;
 		}
 		cpcmd->pout = pipe_fd[1];
+		cpcmd->perr = dup(poerr);
 		cpcmd += 1;
 	}
 	assert(tokchr == NULL);
 	npipes = (cpcmd - pcmd);
 	pin = pipe_fd[0];
-	for (cpcmd = pcmd, idx = 0; idx < npipes - 1; idx++, cpcmd++) {
+	cpcmd = pcmd + npipes - 1;
+	if (!res) {
+		close(pin);
+		pin = 0;
+		close(cpcmd->pout);
+		cpcmd->pout = dup(fileno(stdout));
+	}
+	if (ofname) {
+		ofd = open(ofname, O_WRONLY|O_CREAT, 0644);
+		if (unlikely(ofd == -1)) {
+			elog("Cannot open file %s: %s\n", res, strerror(errno));
+			ofd = 0;
+			goto exit_10;
+		}
+		if (pin) {
+			close(pin);
+			pin = 0;
+		}
+		close(cpcmd->pout);
+		cpcmd->pout = dup(ofd);
+		close(ofd);
+	}
+	if (!input) {
+		close(pout);
+		pout = 0;
+		close(pcmd->pin);
+		pcmd->pin = 0;
+	}
+
+	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
 		cpcmd->pid = fork();
 		if (cpcmd->pid == -1) {
 			elog("fork failed: %s\n", strerror(errno));
@@ -343,76 +465,108 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input)
 			goto exit_10;
 		}
 		if (cpcmd->pid == 0) {
-			fclose(stdin);
-			stdin = fdopen(dup(cpcmd->pin), "rb");
-			fclose(stdout);
-			stdout = fdopen(dup(cpcmd->pout), "wb");
-			parse_execute(cpcmd->cmd);
-		}
-	}
-	cpcmd->pid = fork();
-	if (cpcmd->pid == -1) {
-		elog("fork failed: %s\n", strerror(errno));
-		retv = -errno;
-		goto exit_10;
-	}
-	if (cpcmd->pid == 0) {
-		fclose(stdin);
-		stdin = fdopen(dup(cpcmd->pin), "rb");
-		if (res) {
 			fclose(stdout);
 			stdout = fdopen(dup(cpcmd->pout), "wb");
 			fclose(stderr);
-			stderr = fdopen(dup(cpcmd->pout), "wb");
+			stderr = fdopen(dup(cpcmd->perr), "wb");
+			fclose(stdin);
+			if (likely(cpcmd->pin))
+				stdin = fdopen(dup(cpcmd->pin), "rb");
+			close_all(pcmd, npipes);
+			if (pin)
+				close(pin);
+			if (pout)
+				close(pout);
+			if (pierr)
+				close(pierr);
+			if (poerr)
+				close(poerr);
+			parse_execute(cpcmd->cmd);
 		}
-		parse_execute(cpcmd->cmd);
 	}
 
-	struct pollfd pfd;
-	pfd.fd = pout;
-	pfd.events = POLLOUT;
-	ln = input;
-	while (ln && *ln) {
-		pfd.revents = 0;
-		sysret = poll(&pfd, 1, 200);
-		if (pfd.revents & POLLERR)
-			break;
-		inlen = strlen(ln);
-		len = write(pfd.fd, ln, inlen);
-		if (len == -1) {
-			elog("Write input through pipe failed: %s\n",
-					strerror(errno));
-			break;
+	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
+		if (likely(cpcmd->pin))
+			close(cpcmd->pin);
+		close(cpcmd->pout);
+		close(cpcmd->perr);
+		cpcmd->pin = 0;
+		cpcmd->pout = 0;
+		cpcmd->perr = 0;
+	}
+	close(poerr);
+
+	struct pollfd pfd[3];
+	int numpfds = 0;
+	static const struct timespec itv = {.tv_sec = 0, .tv_nsec = 200000000};
+
+	if (pout) {
+		pfd[numpfds].fd = pout;
+		pfd[numpfds].events = POLLOUT;
+		numpfds++;
+	}
+	if (pierr) {
+		pfd[numpfds].fd = pierr;
+		pfd[numpfds].events = POLLIN;
+		numpfds++;
+	}
+	if (pin) {
+		pfd[numpfds].fd = pin;
+		pfd[numpfds].events = POLLIN;
+		numpfds++;
+	}
+
+	resbuf = res;
+	lenrem = reslen;
+	do {
+		if (numpfds > 0) {
+			if (lenrem <= 0) {
+				elog("Output Buffer Overflow\n");
+				resbuf = res;
+				lenrem = reslen;
+			}
+			retv = probe_io(pfd, numpfds, input, &input_ptr,
+					resbuf, lenrem);
+			if (retv == -1)
+				break;
+			resbuf += retv;
+			lenrem -= retv;
+			input = input_ptr;
 		} else
-			ln += len;
-	}
-
-	pfd.fd = pin;
-	pfd.events = POLLIN;
-	if (res)
-		retv = wait_and_get(cpcmd->pid, res, reslen, &pfd, cmdline);
-	else {
-		do
-			sysret = waitpid(cpcmd->pid, &retv, 0);
-		while (sysret == -1 && errno == EINTR);
-		assert(sysret > 0);
-	}
-	cpcmd->pid = 0;
+			op_nanosleep(&itv);
+		fin = 1;
+		for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
+			if (cpcmd->pid == 0)
+				continue;
+			fin = 0;
+			sysret = waitpid(cpcmd->pid, retvs+idx, WNOHANG);
+			if (sysret > 0)
+				cpcmd->pid = 0;
+		}
+	} while (fin == 0);
 
 exit_10:
+	if (unlikely(ofd))
+		close(ofd);
 	if (pin)
 		close(pin);
 	if (pout)
 		close(pout);
-	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
+	if (pierr)
+		close(pierr);
+	if (poerr)
+		close(poerr);
+	for (cpcmd = pcmd, idx = 0; idx < MAX_PIPES; idx++, cpcmd++) {
 		if (cpcmd->pin)
 			close(cpcmd->pin);
 		if (cpcmd->pout)
 			close(cpcmd->pout);
+		if (cpcmd->perr)
+			close(cpcmd->perr);
 		if (cpcmd->pid == 0)
 			continue;
 		do
-			sysret = waitpid(cpcmd->pid, NULL, 0);
+			sysret = waitpid(cpcmd->pid, retvs+idx, 0);
 		while (sysret == -1 && errno == EINTR);
 		if (unlikely(sysret == -1))
 			elog("waitpid failed for %s: %s\n", cpcmd->cmd,

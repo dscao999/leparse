@@ -4,7 +4,10 @@ LIBS = -lmiscs -lmariadb
 
 .PHONY: all clean
 
-all: fmon lecho dirnot plidm rmtexe chpass
+all: fmon lecho dirnot plidm rmtexe chpass mi2rd
+
+mi2rd: mi2rdly.o pipe_execution.o
+	$(LINK.o) $^ -lmiscs -o $@
 
 fmon: lease_mon.o file_monitor.o lease_parse.o
 	$(LINK.o) $^ -o $@
@@ -33,6 +36,6 @@ release: LDFLAGS += -O1
 
 clean:
 	rm -f *.o *.d
-	rm -f fmon lecho dirnot rmtexe plidm chpass
+	rm -f fmon lecho dirnot rmtexe plidm chpass mi2rd
 
 include $(HOME)/devel/lib/header-dep.mak
