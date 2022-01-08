@@ -11,14 +11,12 @@
 int main(int argc, char *argv[])
 {
 	int retv = 0;
-	char res[1024];
+	char res[1024], ocwd[128];
+	char cmdbuf[256];
 
 	elog_init();
 
-	retv = pipe_execute(NULL, 0, "ls -l troot|wc", NULL, NULL);
-	printf("%s", res);
-/*	retv = pipe_execute(res, 1024, "ls -l ytroot", NULL, NULL);
-	printf("%s", res);
+	*res = 0;
 	if (unlikely(!getcwd(ocwd, sizeof(ocwd)))) {
 		elog("Cannot get current directory: %s\n", strerror(errno));
 		return 1;
@@ -28,11 +26,11 @@ int main(int argc, char *argv[])
 		return 2;
 	}
 	printf("CWD: %s\n", getcwd(NULL, 0));
-	sprintf(cmdbuf, "find . -print|cpio -o -H newc|gzip -c -9");
-	retv = pipe_execute("../initramfs.img", 0, cmdbuf, NULL, 1);
+	sprintf(cmdbuf, "find . -print|cpio -o -H newc|gzip -c");
+	retv = pipe_execute(NULL, 0, cmdbuf, NULL, "/tmp/initramfs.img");
 	if (unlikely(chdir(ocwd) == -1)) {
 		elog("Cannot change back to %s: %s\n", ocwd, strerror(errno));
-	}*/
+	}
 
 	return retv;
 }

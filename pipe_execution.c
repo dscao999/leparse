@@ -288,13 +288,13 @@ static void close_all(struct pipe_element *pcmd, int npipes)
 	struct pipe_element *cpcmd;
 
 	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
-		if (likely(cpcmd->pin))
+		if (likely(cpcmd->pin != -1))
 			close(cpcmd->pin);
 		close(cpcmd->pout);
 		close(cpcmd->perr);
-		cpcmd->pin = 0;
-		cpcmd->pout = 0;
-		cpcmd->perr = 0;
+		cpcmd->pin = -1;
+		cpcmd->pout = -1;
+		cpcmd->perr = -1;
 	}
 }
 
@@ -334,7 +334,9 @@ static int probe_io(struct pollfd *pfd, int numpfds, const char *input,
 		}
 		if (cpfd->revents & POLLOUT) {
 			len = strlen(input);
-			numw = write(cpfd->fd, input, len);
+			numw = 0;
+			if (len > 0)
+				numw = write(cpfd->fd, input, len);
 			if (numw == -1) {
 				elog("failed to write: %s\n",
 						strerror(errno));
@@ -359,12 +361,13 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 	const char *input_ptr;
 	struct pipe_element *pcmd, *cpcmd, *lpcmd;
 
+	npipes = 0;
 	retv = 0;
-	pout = 0;
-	pin = 0;
-	poerr = 0;
-	pierr = 0;
-	ofd = 0;
+	pout = -1;
+	pin = -1;
+	poerr = -1;
+	pierr = -1;
+	ofd = -1;
 	if (res)
 		res[0] = 0;
 	if (!cmdline)
@@ -399,11 +402,16 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 	if (!res) {
 		close(pierr);
 		close(poerr);
-		pierr = 0;
+		pierr = -1;
 		poerr = dup(fileno(stderr));
+		if (unlikely(poerr == -1)) {
+			elog("dup failed: %s\n", strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
 	}
 	sysret = pipe(pipe_fd);
-	if (sysret == -1) {
+	if (unlikely(sysret == -1)) {
 		elog("pipe failed: %s\n", strerror(errno));
 		retv = -errno;
 		goto exit_10;
@@ -423,6 +431,11 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 		}
 		cpcmd->pout = pipe_fd[1];
 		cpcmd->perr = dup(poerr);
+		if (unlikely(cpcmd->perr == -1)) {
+			elog("dup failed: %s\n", strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
 		cpcmd += 1;
 	}
 	assert(tokchr == NULL);
@@ -431,30 +444,41 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 	cpcmd = pcmd + npipes - 1;
 	if (!res) {
 		close(pin);
-		pin = 0;
+		pin = -1;
 		close(cpcmd->pout);
 		cpcmd->pout = dup(fileno(stdout));
+		if (unlikely(cpcmd->pout == -1)) {
+			elog("dup failed: %s\n", strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
 	}
 	if (ofname) {
 		ofd = open(ofname, O_WRONLY|O_CREAT, 0644);
 		if (unlikely(ofd == -1)) {
-			elog("Cannot open file %s: %s\n", res, strerror(errno));
-			ofd = 0;
+			elog("Cannot open file %s: %s\n", ofname,
+					strerror(errno));
 			goto exit_10;
 		}
 		if (pin) {
 			close(pin);
-			pin = 0;
+			pin = -1;
 		}
 		close(cpcmd->pout);
 		cpcmd->pout = dup(ofd);
+		if (unlikely(cpcmd->pout == -1)) {
+			elog("dup failed: %s\n", strerror(errno));
+			retv = -errno;
+			goto exit_10;
+		}
 		close(ofd);
+		ofd = -1;
 	}
 	if (!input) {
 		close(pout);
-		pout = 0;
+		pout = -1;
 		close(pcmd->pin);
-		pcmd->pin = 0;
+		pcmd->pin = -1;
 	}
 
 	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
@@ -470,29 +494,29 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 			fclose(stderr);
 			stderr = fdopen(dup(cpcmd->perr), "wb");
 			fclose(stdin);
-			if (likely(cpcmd->pin))
+			if (likely(cpcmd->pin != -1))
 				stdin = fdopen(dup(cpcmd->pin), "rb");
 			close_all(pcmd, npipes);
-			if (pin)
+			if (pin != -1)
 				close(pin);
-			if (pout)
+			if (pout != -1)
 				close(pout);
-			if (pierr)
+			if (pierr != -1)
 				close(pierr);
-			if (poerr)
+			if (poerr != -1)
 				close(poerr);
 			parse_execute(cpcmd->cmd);
 		}
 	}
 
 	for (cpcmd = pcmd, idx = 0; idx < npipes; idx++, cpcmd++) {
-		if (likely(cpcmd->pin))
+		if (likely(cpcmd->pin != -1))
 			close(cpcmd->pin);
 		close(cpcmd->pout);
 		close(cpcmd->perr);
-		cpcmd->pin = 0;
-		cpcmd->pout = 0;
-		cpcmd->perr = 0;
+		cpcmd->pin = -1;
+		cpcmd->pout = -1;
+		cpcmd->perr = -1;
 	}
 	close(poerr);
 
@@ -500,17 +524,17 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 	int numpfds = 0;
 	static const struct timespec itv = {.tv_sec = 0, .tv_nsec = 200000000};
 
-	if (pout) {
+	if (pout != -1) {
 		pfd[numpfds].fd = pout;
 		pfd[numpfds].events = POLLOUT;
 		numpfds++;
 	}
-	if (pierr) {
+	if (pierr != -1) {
 		pfd[numpfds].fd = pierr;
 		pfd[numpfds].events = POLLIN;
 		numpfds++;
 	}
-	if (pin) {
+	if (pin != -1) {
 		pfd[numpfds].fd = pin;
 		pfd[numpfds].events = POLLIN;
 		numpfds++;
@@ -546,22 +570,22 @@ int pipe_execute(char *res, int reslen, const char *cmdline, const char *input,
 	} while (fin == 0);
 
 exit_10:
-	if (unlikely(ofd))
+	if (unlikely(ofd != -1))
 		close(ofd);
-	if (pin)
+	if (pin != -1)
 		close(pin);
-	if (pout)
+	if (pout != -1)
 		close(pout);
-	if (pierr)
+	if (pierr != -1)
 		close(pierr);
-	if (poerr)
+	if (poerr != -1)
 		close(poerr);
 	for (cpcmd = pcmd, idx = 0; idx < MAX_PIPES; idx++, cpcmd++) {
-		if (cpcmd->pin)
+		if (cpcmd->pin != -1)
 			close(cpcmd->pin);
-		if (cpcmd->pout)
+		if (cpcmd->pout != -1)
 			close(cpcmd->pout);
-		if (cpcmd->perr)
+		if (cpcmd->perr != -1)
 			close(cpcmd->perr);
 		if (cpcmd->pid == 0)
 			continue;
@@ -572,6 +596,7 @@ exit_10:
 			elog("waitpid failed for %s: %s\n", cpcmd->cmd,
 					strerror(errno));
 	}
+	retv = *(retvs+npipes-1);
 	if (unlikely(retv != 0))
 		elog("failed command: code %X %s\n--->%s\n", retv, cmdline, res);
 
